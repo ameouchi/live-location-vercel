@@ -16,7 +16,9 @@
 <body>
   <div id="map"></div>
   <script>
-    const mapboxAccessToken = 'pk.eyJ1IjoiZ2FieWNhcnUiLCJhIjoiY203dzI5eTRpMDExeDJqcHk0a2JjaWp4diJ9.Voohpst6Zz-ZN7MZ_M3BUw';
+    const accessToken = 'pk.eyJ1IjoiZ2FieWNhcnUiLCJhIjoiY203dzI5eTRpMDExeDJqcHk0a2JjaWp4diJ9.Voohpst6Zz-ZN7MZ_M3BUw';
+    mapboxgl.accessToken = accessToken;
+
     const map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/gabycaru/cm8d60fxc00rg01s5hlv55yn1?optimize=true',
@@ -24,37 +26,45 @@
       zoom: 18
     });
 
-    const ZONE_A = turf.rectangle([-71.12966, 42.34822, -71.12952, 42.34831]);
-    const ZONE_B = turf.rectangle([-71.12952, 42.34822, -71.12938, 42.34831]);
+    const ZONE_A = turf.polygon([[
+      [-71.12966, 42.34822],
+      [-71.12952, 42.34822],
+      [-71.12952, 42.34831],
+      [-71.12966, 42.34831],
+      [-71.12966, 42.34822]
+    ]]);
+
+    const ZONE_B = turf.polygon([[
+      [-71.12952, 42.34822],
+      [-71.12938, 42.34822],
+      [-71.12938, 42.34831],
+      [-71.12952, 42.34831],
+      [-71.12952, 42.34822]
+    ]]);
 
     const zones = [
       { polygon: ZONE_A, color: [255, 0, 0], sound: new Audio('https://www.soundjay.com/button/beep-07.mp3') },
       { polygon: ZONE_B, color: [0, 0, 255], sound: new Audio('https://www.soundjay.com/button/beep-08b.mp3') }
     ];
 
-    const deckgl = new deck.DeckGL({
-      container: 'map',
-      map: map,
-      mapboxApiAccessToken: mapboxAccessToken,
-      layers: [],
-      controller: false
+    const overlay = new deck.MapboxOverlay({
+      layers: zones.map((z, i) =>
+        new deck.PolygonLayer({
+          id: `zone-${i}`,
+          data: [z.polygon],
+          getPolygon: f => f.geometry.coordinates,
+          getLineColor: z.color,
+          getLineWidth: 3,
+          lineWidthMinPixels: 2,
+          stroked: true,
+          filled: false
+        })
+      )
     });
 
-    function updateLayers() {
-      const layers = zones.map((z, i) => new deck.PolygonLayer({
-        id: 'zone-' + i,
-        data: [z.polygon],
-        getPolygon: f => f.geometry.coordinates,
-        getLineColor: z.color,
-        getLineWidth: 3,
-        lineWidthMinPixels: 2,
-        stroked: true,
-        filled: false
-      }));
-      deckgl.setProps({ layers });
-    }
-
-    updateLayers();
+    map.on('load', () => {
+      map.addControl(overlay);
+    });
 
     let lastZoneIndex = null;
 
