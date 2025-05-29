@@ -1,33 +1,31 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Combined Location Share + Sound Grid</title>
+  <title>Combined Location + Sound Grid</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
-    body { margin: 0; padding: 0; font-family: sans-serif; }
+    body { margin: 0; padding: 0; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
     #controls {
       position: absolute;
       top: 10px;
       left: 10px;
-      background: rgba(255,255,255,0.9);
+      background: white;
       padding: 10px;
-      z-index: 1;
-      border-radius: 5px;
+      z-index: 999;
+      border: 1px solid #ccc;
     }
-    input, button { margin: 5px 0; padding: 5px; width: 100%; }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div id="controls">
-    <input id="name" placeholder="Your name" />
-    <button id="start">Start Sharing</button>
-    <button id="stop" disabled>Stop Sharing</button>
+    <input type="text" id="name" placeholder="Your name" />
+    <button id="shareBtn">Start Sharing</button>
   </div>
 
   <script>
@@ -36,34 +34,36 @@
     const map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/gabycaru/cm8d60fxc00rg01s5hlv55yn1?optimize=true',
-      center: [-71.1293, 42.3481],
-      zoom: 19
+      center: [-71.12953, 42.34836],
+      zoom: 20
     });
 
-    const baseLng = -71.1293;
-    const baseLat = 42.34805;
+    let sharing = false;
+    let watchId = null;
     const zones = [];
-    const zoneFlags = {};
+    const zoneFlags = new Array(36).fill(false);
     const sounds = [];
-    const gridSize = 6;
-    const step = 0.000025; // ~2-3m
 
-    // Create 6x6 grid of zones
-    for (let i = 0; i < gridSize; i++) {
-      for (let j = 0; j < gridSize; j++) {
-        const offsetLng = i * step - 3 * step;
-        const offsetLat = j * step - 3 * step;
-        const zone = turf.polygon([[
-          [baseLng + offsetLng, baseLat + offsetLat],
-          [baseLng + offsetLng + step, baseLat + offsetLat],
-          [baseLng + offsetLng + step, baseLat + offsetLat + step],
-          [baseLng + offsetLng, baseLat + offsetLat + step],
-          [baseLng + offsetLng, baseLat + offsetLat]
+    const centerLng = -71.12953 - 0.00007;
+    const centerLat = 42.34836 - 0.000085;
+    const spacing = 0.000015;
+    const size = 0.000013;
+
+    let id = 0;
+    for (let row = -2.5; row <= 2.5; row++) {
+      for (let col = -2.5; col <= 2.5; col++) {
+        const lng = centerLng + col * spacing;
+        const lat = centerLat + row * spacing;
+        const polygon = turf.polygon([[
+          [lng, lat],
+          [lng + size, lat],
+          [lng + size, lat + size],
+          [lng, lat + size],
+          [lng, lat]
         ]]);
-        zones.push(zone);
-        const index = i * gridSize + j;
-        zoneFlags[index] = false;
-        sounds[index] = new Audio(`/zone_sound${(index % 10) + 1}.mp3`);
+        zones.push(polygon);
+        sounds.push(new Audio(`/zone_sound${id + 1}.mp3`));
+        id++;
       }
     }
 
@@ -97,11 +97,40 @@
         source: 'zones',
         paint: {
           'line-color': '#00FFFF',
-          'line-width': 1
+          'line-width': 2
         }
       });
 
+      updateMap();
       setInterval(updateMap, 3000);
+    });
+
+    document.getElementById('shareBtn').addEventListener('click', () => {
+      const name = document.getElementById('name').value.trim();
+      if (!name) return alert('Please enter your name');
+
+      if (!sharing) {
+        watchId = navigator.geolocation.watchPosition(
+          pos => {
+            fetch('/api/location', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name,
+                coords: [pos.coords.longitude, pos.coords.latitude]
+              })
+            });
+          },
+          err => console.error(err),
+          { enableHighAccuracy: true, maximumAge: 0 }
+        );
+        sharing = true;
+        document.getElementById('shareBtn').textContent = 'Stop Sharing';
+      } else {
+        navigator.geolocation.clearWatch(watchId);
+        sharing = false;
+        document.getElementById('shareBtn').textContent = 'Start Sharing';
+      }
     });
 
     async function updateMap() {
@@ -113,52 +142,33 @@
         const features = data.features;
         const lastFeature = features[features.length - 1];
 
-        if (lastFeature && lastFeature.geometry?.coordinates?.length) {
-          const lastCoord = lastFeature.geometry.coordinates.at(-1);
-          const pt = turf.point(lastCoord);
+        if (lastFeature && lastFeature.geometry && Array.isArray(lastFeature.geometry.coordinates)) {
+          const line = lastFeature.geometry.coordinates;
+          const lastCoord = line[line.length - 1];
 
-          zones.forEach((zone, i) => {
-            if (turf.booleanPointInPolygon(pt, zone)) {
-              if (!zoneFlags[i]) {
-                sounds[i].play();
-                zoneFlags[i] = true;
+          if (Array.isArray(lastCoord) && typeof lastCoord[0] === 'number' && typeof lastCoord[1] === 'number') {
+            const pt = turf.point(lastCoord);
+            zones.forEach((zone, i) => {
+              if (turf.booleanPointInPolygon(pt, zone)) {
+                if (!zoneFlags[i]) {
+                  sounds[i].loop = true;
+                  sounds[i].play();
+                  zoneFlags[i] = true;
+                }
+              } else {
+                if (zoneFlags[i]) {
+                  sounds[i].pause();
+                  sounds[i].currentTime = 0;
+                  zoneFlags[i] = false;
+                }
               }
-            } else {
-              zoneFlags[i] = false;
-            }
-          });
+            });
+          }
         }
       } catch (err) {
-        console.error('updateMap error', err);
+        console.error('Failed to fetch geo or check zones', err);
       }
     }
-
-    let watchId = null;
-    document.getElementById('start').onclick = () => {
-      const name = document.getElementById('name').value.trim();
-      if (!name) return alert('Enter your name');
-
-      document.getElementById('start').disabled = true;
-      document.getElementById('stop').disabled = false;
-
-      watchId = navigator.geolocation.watchPosition(pos => {
-        fetch('/api/location', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name,
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude
-          })
-        }).catch(console.error);
-      }, console.error, { enableHighAccuracy: true });
-    };
-
-    document.getElementById('stop').onclick = () => {
-      navigator.geolocation.clearWatch(watchId);
-      document.getElementById('start').disabled = false;
-      document.getElementById('stop').disabled = true;
-    };
   </script>
 </body>
 </html>
