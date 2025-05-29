@@ -1,7 +1,7 @@
 {
   "routes": [
     { "src": "/api/geo", "dest": "/api/geo.js" },
-    { "src": "/map", "dest": "/public/map.html" },
+    { "src": "/map", "dest": "/map.html" },
     { "src": "/", "dest": "/public/index.html" }
   ]
 }
