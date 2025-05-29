@@ -32,29 +32,37 @@
     const map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/gabycaru/cm8d60fxc00rg01s5hlv55yn1?optimize=true',
-      center: [-71.1293, 42.3481],
-      zoom: 19
+      center: [-71.12953, 42.34836],
+      zoom: 20
     });
 
-    const baseLng = -71.1293;
-    const baseLat = 42.34805;
     const zones = [];
-    const zoneFlags = new Array(10).fill(false);
+    const zoneFlags = new Array(9).fill(false);
     const sounds = [];
 
-    for (let i = 0; i < 10; i++) {
-      // define zone polygon
-      const offsetLng = i * 0.00007; // ~6m spacing
-      const zone = turf.polygon([[
-        [baseLng + offsetLng, baseLat],
-        [baseLng + offsetLng + 0.00005, baseLat],
-        [baseLng + offsetLng + 0.00005, baseLat + 0.00005],
-        [baseLng + offsetLng, baseLat + 0.00005],
-        [baseLng + offsetLng, baseLat]
-      ]]);
-      zones.push(zone);
-      // load sound
-      sounds.push(new Audio(`/zone_sound${i + 1}.mp3`));
+    const centerLng = -71.12953;
+    const centerLat = 42.34836;
+    const spacing = 0.00004; // ~3.5m
+    const size = 0.00003;    // ~2.5m
+
+    let id = 0;
+    for (let row = -1; row <= 1; row++) {
+      for (let col = -1; col <= 1; col++) {
+        const lng = centerLng + col * spacing;
+        const lat = centerLat + row * spacing;
+
+        const polygon = turf.polygon([[
+          [lng, lat],
+          [lng + size, lat],
+          [lng + size, lat + size],
+          [lng, lat + size],
+          [lng, lat]
+        ]]);
+
+        zones.push(polygon);
+        sounds.push(new Audio(`/zone_sound${id + 1}.mp3`));
+        id++;
+      }
     }
 
     map.on('load', () => {
@@ -93,8 +101,8 @@
     });
 
     document.getElementById('startBtn').addEventListener('click', () => {
-      updateMap(); // fetch once
-      setInterval(updateMap, 3000); // then every 3s
+      updateMap();
+      setInterval(updateMap, 3000);
     });
 
     async function updateMap() {
