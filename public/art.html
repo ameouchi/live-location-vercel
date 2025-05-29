@@ -37,33 +37,34 @@
     });
 
     const zones = [];
-    const zoneFlags = new Array(9).fill(false);
-    const sounds = [];
+const zoneFlags = new Array(9).fill(false);
+const sounds = [];
 
-    const centerLng = -71.12953;
-    const centerLat = 42.34836;
-    const spacing = 0.00004; // ~3.5m
-    const size = 0.00003;    // ~2.5m
+const centerLng = -71.12953;
+const centerLat = 42.34836 - 0.000054;  // moved ~6 meters south
+const spacing = 0.000025;               // tighter grid
+const size = 0.00002;                   // smaller squares
 
-    let id = 0;
-    for (let row = -1; row <= 1; row++) {
-      for (let col = -1; col <= 1; col++) {
-        const lng = centerLng + col * spacing;
-        const lat = centerLat + row * spacing;
+let id = 0;
+for (let row = -1; row <= 1; row++) {
+  for (let col = -1; col <= 1; col++) {
+    const lng = centerLng + col * spacing;
+    const lat = centerLat + row * spacing;
 
-        const polygon = turf.polygon([[
-          [lng, lat],
-          [lng + size, lat],
-          [lng + size, lat + size],
-          [lng, lat + size],
-          [lng, lat]
-        ]]);
+    const polygon = turf.polygon([[
+      [lng, lat],
+      [lng + size, lat],
+      [lng + size, lat + size],
+      [lng, lat + size],
+      [lng, lat]
+    ]]);
 
-        zones.push(polygon);
-        sounds.push(new Audio(`/zone_sound${id + 1}.mp3`));
-        id++;
-      }
-    }
+    zones.push(polygon);
+    sounds.push(new Audio(`/zone_sound${id + 1}.mp3`));
+    id++;
+  }
+}
+
 
     map.on('load', () => {
       map.addSource('live-lines', {
