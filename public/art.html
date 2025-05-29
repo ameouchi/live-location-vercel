@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Geofence Sound Zones</title>
+  <title>Geofence Sound Zones with Line Tracking</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
@@ -61,8 +61,8 @@
       { polygon: ZONE_B, color: [0, 0, 255], sound: new Audio('https://www.soundjay.com/button/beep-08b.mp3') }
     ];
 
-    let userLocation = null;
     let lastZoneIndex = null;
+    let userPath = [];
 
     const overlay = new deck.MapboxOverlay({
       get layers() {
@@ -79,18 +79,19 @@
           })
         );
 
-        const dotLayer = userLocation
-          ? new deck.ScatterplotLayer({
-              id: 'user-dot',
-              data: [userLocation],
-              getPosition: d => d,
-              getRadius: 6,
-              getFillColor: [255, 0, 0],
-              radiusMinPixels: 6
+        const pathLayer = userPath.length > 1
+          ? new deck.LineLayer({
+              id: 'user-line',
+              data: [userPath],
+              getSourcePosition: d => d[0],
+              getTargetPosition: d => d[1],
+              getColor: [255, 0, 0],
+              getWidth: 4,
+              widthMinPixels: 2
             })
           : null;
 
-        return [...zoneLayers, ...(dotLayer ? [dotLayer] : [])];
+        return [...zoneLayers, ...(pathLayer ? [pathLayer] : [])];
       }
     });
 
@@ -101,13 +102,19 @@
     document.getElementById('startButton').addEventListener('click', () => {
       document.getElementById('startButton').style.display = 'none';
 
-      // Unlock audio context by calling play once
+      // Unlock audio
       zones.forEach(z => z.sound.play().then(() => z.sound.pause()));
 
       navigator.geolocation.watchPosition(pos => {
         const coords = [pos.coords.longitude, pos.coords.latitude];
         const point = turf.point(coords);
-        userLocation = coords;
+
+        // Add new segment to userPath
+        if (userPath.length === 0) {
+          userPath.push([coords, coords]);
+        } else {
+          userPath.push([userPath[userPath.length - 1][1], coords]);
+        }
 
         let insideIndex = null;
         zones.forEach((z, i) => {
