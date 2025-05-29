@@ -1,37 +1,33 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Combined Map + Sharing</title>
+  <title>Combined Location Share + Sound Grid</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
-    body { margin: 0; padding: 0; }
+    body { margin: 0; padding: 0; font-family: sans-serif; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
     #controls {
       position: absolute;
       top: 10px;
       left: 10px;
-      background: white;
+      background: rgba(255,255,255,0.9);
       padding: 10px;
-      z-index: 10;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      z-index: 1;
+      border-radius: 5px;
     }
-    #controls input, #controls button {
-      margin-top: 5px;
-      display: block;
-      width: 160px;
-    }
+    input, button { margin: 5px 0; padding: 5px; width: 100%; }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div id="controls">
-    <input id="nameInput" placeholder="Your Name" />
-    <button id="startBtn">Start Sharing</button>
-    <button id="stopBtn" disabled>Stop Sharing</button>
+    <input id="name" placeholder="Your name" />
+    <button id="start">Start Sharing</button>
+    <button id="stop" disabled>Stop Sharing</button>
   </div>
 
   <script>
@@ -40,64 +36,69 @@
     const map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/gabycaru/cm8d60fxc00rg01s5hlv55yn1?optimize=true',
-      center: [-71.12959, 42.348266],
+      center: [-71.1293, 42.3481],
       zoom: 19
     });
 
-    const centerLng = -71.12959;
-    const centerLat = 42.348266;
-    const cellSize = 0.00003; // ~3m square
-    const spacing = 0.000035; // ~3.5m spacing
-    const gridSize = 6;
+    const baseLng = -71.1293;
+    const baseLat = 42.34805;
     const zones = [];
-    const zoneFlags = [];
+    const zoneFlags = {};
     const sounds = [];
+    const gridSize = 6;
+    const step = 0.000025; // ~2-3m
 
-    // Create 6x6 grid centered slightly SW
-    for (let row = 0; row < gridSize; row++) {
-      for (let col = 0; col < gridSize; col++) {
-        const i = row * gridSize + col;
-        const lng = centerLng - 0.00008 + col * spacing;
-        const lat = centerLat - 0.00008 + row * spacing;
-
+    // Create 6x6 grid of zones
+    for (let i = 0; i < gridSize; i++) {
+      for (let j = 0; j < gridSize; j++) {
+        const offsetLng = i * step - 3 * step;
+        const offsetLat = j * step - 3 * step;
         const zone = turf.polygon([[
-          [lng, lat],
-          [lng + cellSize, lat],
-          [lng + cellSize, lat + cellSize],
-          [lng, lat + cellSize],
-          [lng, lat]
+          [baseLng + offsetLng, baseLat + offsetLat],
+          [baseLng + offsetLng + step, baseLat + offsetLat],
+          [baseLng + offsetLng + step, baseLat + offsetLat + step],
+          [baseLng + offsetLng, baseLat + offsetLat + step],
+          [baseLng + offsetLng, baseLat + offsetLat]
         ]]);
         zones.push(zone);
-        zoneFlags.push(false);
-        sounds.push(new Audio(`/zone_sound${i + 1}.mp3`));
+        const index = i * gridSize + j;
+        zoneFlags[index] = false;
+        sounds[index] = new Audio(`/zone_sound${(index % 10) + 1}.mp3`);
       }
     }
 
-    // Add map sources and layers
     map.on('load', () => {
       map.addSource('live-lines', {
         type: 'geojson',
-        data: { type: "FeatureCollection", features: [] }
+        data: { type: 'FeatureCollection', features: [] }
       });
+
       map.addLayer({
         id: 'live-lines',
         type: 'line',
         source: 'live-lines',
-        paint: { 'line-color': '#FF0000', 'line-width': 4 }
+        paint: {
+          'line-color': '#FF0000',
+          'line-width': 4
+        }
       });
 
       map.addSource('zones', {
         type: 'geojson',
         data: {
-          type: "FeatureCollection",
-          features: zones.map(z => ({ type: "Feature", geometry: z.geometry }))
+          type: 'FeatureCollection',
+          features: zones.map(z => ({ type: 'Feature', geometry: z.geometry }))
         }
       });
+
       map.addLayer({
         id: 'zones',
         type: 'line',
         source: 'zones',
-        paint: { 'line-color': '#00FFFF', 'line-width': 2 }
+        paint: {
+          'line-color': '#00FFFF',
+          'line-width': 1
+        }
       });
 
       setInterval(updateMap, 3000);
@@ -111,65 +112,52 @@
 
         const features = data.features;
         const lastFeature = features[features.length - 1];
-        if (!lastFeature?.geometry?.coordinates?.length) return;
 
-        const lastCoord = lastFeature.geometry.coordinates.slice(-1)[0];
-        const pt = turf.point(lastCoord);
+        if (lastFeature && lastFeature.geometry?.coordinates?.length) {
+          const lastCoord = lastFeature.geometry.coordinates.at(-1);
+          const pt = turf.point(lastCoord);
 
-        zones.forEach((zone, i) => {
-          if (turf.booleanPointInPolygon(pt, zone)) {
-            if (!zoneFlags[i]) {
-              sounds[i].loop = true;
-              sounds[i].play().catch(() => {});
-              zoneFlags[i] = true;
-            }
-          } else {
-            if (zoneFlags[i]) {
-              sounds[i].pause();
-              sounds[i].currentTime = 0;
+          zones.forEach((zone, i) => {
+            if (turf.booleanPointInPolygon(pt, zone)) {
+              if (!zoneFlags[i]) {
+                sounds[i].play();
+                zoneFlags[i] = true;
+              }
+            } else {
               zoneFlags[i] = false;
             }
-          }
-        });
+          });
+        }
       } catch (err) {
-        console.error('updateMap error:', err);
+        console.error('updateMap error', err);
       }
     }
 
-    // Geolocation Sharing
     let watchId = null;
+    document.getElementById('start').onclick = () => {
+      const name = document.getElementById('name').value.trim();
+      if (!name) return alert('Enter your name');
 
-    document.getElementById('startBtn').onclick = () => {
-      const name = document.getElementById('nameInput').value.trim();
-      if (!name) return alert("Please enter a name");
+      document.getElementById('start').disabled = true;
+      document.getElementById('stop').disabled = false;
 
-      if ('geolocation' in navigator) {
-        watchId = navigator.geolocation.watchPosition(pos => {
-          fetch('/api/location', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name,
-              lat: pos.coords.latitude,
-              lng: pos.coords.longitude
-            })
-          }).catch(console.error);
-        }, console.error, { enableHighAccuracy: true });
-
-        document.getElementById('startBtn').disabled = true;
-        document.getElementById('stopBtn').disabled = false;
-      } else {
-        alert("Geolocation is not supported by this browser.");
-      }
+      watchId = navigator.geolocation.watchPosition(pos => {
+        fetch('/api/location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude
+          })
+        }).catch(console.error);
+      }, console.error, { enableHighAccuracy: true });
     };
 
-    document.getElementById('stopBtn').onclick = () => {
-      if (watchId !== null) {
-        navigator.geolocation.clearWatch(watchId);
-        watchId = null;
-      }
-      document.getElementById('startBtn').disabled = false;
-      document.getElementById('stopBtn').disabled = true;
+    document.getElementById('stop').onclick = () => {
+      navigator.geolocation.clearWatch(watchId);
+      document.getElementById('start').disabled = false;
+      document.getElementById('stop').disabled = true;
     };
   </script>
 </body>
