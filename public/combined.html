@@ -1,33 +1,31 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Combined Map + Sound + UI</title>
+  <title>Combined Live Map + Sound Grid</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
-    body { margin: 0; padding: 0; font-family: sans-serif; }
+    body { margin: 0; padding: 0; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
-    #controls {
+    .controls {
       position: absolute;
-      z-index: 999;
-      top: 20px;
-      left: 20px;
-      background: white;
+      top: 10px;
+      left: 10px;
+      background: rgba(255, 255, 255, 0.9);
       padding: 10px;
-      border-radius: 5px;
-      border: 1px solid #ccc;
+      border-radius: 4px;
+      z-index: 999;
     }
-    #controls input { width: 120px; margin-right: 10px; }
   </style>
 </head>
 <body>
   <div id="map"></div>
-  <div id="controls">
-    <input id="nameInput" placeholder="Your Name" />
-    <button id="startBtn">Start</button>
+  <div class="controls">
+    <input type="text" id="name" placeholder="Your name" />
+    <button id="toggleShare">Start Sharing</button>
   </div>
 
   <script>
@@ -54,7 +52,6 @@
       for (let col = -2.5; col <= 2.5; col++) {
         const lng = centerLng + col * spacing;
         const lat = centerLat + row * spacing;
-
         const polygon = turf.polygon([[
           [lng, lat],
           [lng + size, lat],
@@ -62,9 +59,10 @@
           [lng, lat + size],
           [lng, lat]
         ]]);
-
         zones.push(polygon);
-        sounds.push(new Audio(`/zone_sound${id + 1}.mp3`));
+        const sound = new Audio(`/zone_sound${id + 1}.mp3`);
+        sound.loop = true;
+        sounds.push(sound);
         id++;
       }
     }
@@ -72,7 +70,7 @@
     map.on('load', () => {
       map.addSource('live-lines', {
         type: 'geojson',
-        data: { type: "FeatureCollection", features: [] }
+        data: { type: 'FeatureCollection', features: [] }
       });
 
       map.addLayer({
@@ -88,8 +86,8 @@
       map.addSource('zones', {
         type: 'geojson',
         data: {
-          type: "FeatureCollection",
-          features: zones.map(z => ({ type: "Feature", geometry: z.geometry }))
+          type: 'FeatureCollection',
+          features: zones.map(z => ({ type: 'Feature', geometry: z.geometry }))
         }
       });
 
@@ -102,11 +100,8 @@
           'line-width': 2
         }
       });
-    });
 
-    document.getElementById('startBtn').addEventListener('click', () => {
       setInterval(updateMap, 3000);
-      updateMap();
     });
 
     async function updateMap() {
@@ -125,27 +120,16 @@
         ) {
           const line = lastFeature.geometry.coordinates;
           const lastCoord = line[line.length - 1];
-
-          if (
-            Array.isArray(lastCoord) &&
-            typeof lastCoord[0] === 'number' &&
-            typeof lastCoord[1] === 'number'
-          ) {
+          if (Array.isArray(lastCoord) && typeof lastCoord[0] === 'number' && typeof lastCoord[1] === 'number') {
             const pt = turf.point(lastCoord);
-
             zones.forEach((zone, i) => {
               if (turf.booleanPointInPolygon(pt, zone)) {
                 if (!zoneFlags[i]) {
-                  sounds[i].loop = true;
                   sounds[i].play();
                   zoneFlags[i] = true;
                 }
               } else {
-                if (zoneFlags[i]) {
-                  sounds[i].pause();
-                  sounds[i].currentTime = 0;
-                  zoneFlags[i] = false;
-                }
+                zoneFlags[i] = false;
               }
             });
           }
@@ -154,6 +138,39 @@
         console.error('Failed to fetch geo or check zones', err);
       }
     }
+
+    let watchId = null;
+    const btn = document.getElementById('toggleShare');
+    const nameInput = document.getElementById('name');
+
+    btn.addEventListener('click', () => {
+      if (watchId) {
+        navigator.geolocation.clearWatch(watchId);
+        btn.textContent = 'Start Sharing';
+        watchId = null;
+      } else {
+        const name = nameInput.value || 'anon';
+        watchId = navigator.geolocation.watchPosition(
+          pos => {
+            fetch('/api/geo', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name,
+                coords: {
+                  lat: pos.coords.latitude,
+                  lng: pos.coords.longitude
+                },
+                timestamp: Date.now()
+              })
+            }).catch(console.error);
+          },
+          err => console.error(err),
+          { enableHighAccuracy: true, maximumAge: 0 }
+        );
+        btn.textContent = 'Stop Sharing';
+      }
+    });
   </script>
 </body>
 </html>
