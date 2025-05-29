@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Geofence Sound Zones</title>
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/deck.gl@8.9.27/dist.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    #map { position: absolute; width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    const mapboxAccessToken = 'pk.eyJ1IjoiZ2FieWNhcnUiLCJhIjoiY203dzI5eTRpMDExeDJqcHk0a2JjaWp4diJ9.Voohpst6Zz-ZN7MZ_M3BUw';
+    const map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/gabycaru/cm8d60fxc00rg01s5hlv55yn1?optimize=true',
+      center: [-71.12959099075543, 42.34826632541306],
+      zoom: 18
+    });
+
+    const ZONE_A = turf.rectangle([-71.12966, 42.34822, -71.12952, 42.34831]);
+    const ZONE_B = turf.rectangle([-71.12952, 42.34822, -71.12938, 42.34831]);
+
+    const zones = [
+      { polygon: ZONE_A, color: [255, 0, 0], sound: new Audio('https://www.soundjay.com/button/beep-07.mp3') },
+      { polygon: ZONE_B, color: [0, 0, 255], sound: new Audio('https://www.soundjay.com/button/beep-08b.mp3') }
+    ];
+
+    const deckgl = new deck.DeckGL({
+      container: 'map',
+      map: map,
+      mapboxApiAccessToken: mapboxAccessToken,
+      layers: [],
+      controller: false
+    });
+
+    function updateLayers() {
+      const layers = zones.map((z, i) => new deck.PolygonLayer({
+        id: 'zone-' + i,
+        data: [z.polygon],
+        getPolygon: f => f.geometry.coordinates,
+        getLineColor: z.color,
+        getLineWidth: 3,
+        lineWidthMinPixels: 2,
+        stroked: true,
+        filled: false
+      }));
+      deckgl.setProps({ layers });
+    }
+
+    updateLayers();
+
+    let lastZoneIndex = null;
+
+    navigator.geolocation.watchPosition(pos => {
+      const point = turf.point([pos.coords.longitude, pos.coords.latitude]);
+      let insideIndex = null;
+
+      zones.forEach((z, i) => {
+        if (turf.booleanPointInPolygon(point, z.polygon)) {
+          insideIndex = i;
+        }
+      });
+
+      if (insideIndex !== null && insideIndex !== lastZoneIndex) {
+        zones[insideIndex].sound.play();
+        lastZoneIndex = insideIndex;
+      }
+
+      if (insideIndex === null) {
+        lastZoneIndex = null;
+      }
+    }, err => {
+      console.error('Geolocation error:', err);
+    }, {
+      enableHighAccuracy: true,
+      maximumAge: 1000,
+      timeout: 5000
+    });
+  </script>
+</body>
+</html>
