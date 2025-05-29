@@ -1,31 +1,38 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Combined Live Map + Sound Grid</title>
+  <title>Combined Location & Sound Grid</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
-    body { margin: 0; padding: 0; }
+    body { margin: 0; padding: 0; font-family: sans-serif; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
-    .controls {
+    #controls {
       position: absolute;
-      top: 10px;
-      left: 10px;
+      top: 20px;
+      left: 20px;
       background: rgba(255, 255, 255, 0.9);
       padding: 10px;
       border-radius: 4px;
-      z-index: 999;
+      z-index: 1;
+    }
+    input, button {
+      margin: 5px 0;
+      font-size: 16px;
+      padding: 5px 10px;
     }
   </style>
 </head>
 <body>
   <div id="map"></div>
-  <div class="controls">
-    <input type="text" id="name" placeholder="Your name" />
-    <button id="toggleShare">Start Sharing</button>
+  <div id="controls">
+    <input id="name" type="text" placeholder="Enter your name" />
+    <br>
+    <button id="start">Start Sharing</button>
+    <button id="stop">Stop Sharing</button>
   </div>
 
   <script>
@@ -52,6 +59,7 @@
       for (let col = -2.5; col <= 2.5; col++) {
         const lng = centerLng + col * spacing;
         const lat = centerLat + row * spacing;
+
         const polygon = turf.polygon([[
           [lng, lat],
           [lng + size, lat],
@@ -59,10 +67,9 @@
           [lng, lat + size],
           [lng, lat]
         ]]);
+
         zones.push(polygon);
-        const sound = new Audio(`/zone_sound${id + 1}.mp3`);
-        sound.loop = true;
-        sounds.push(sound);
+        sounds.push(new Audio(`/zone_sound${id + 1}.mp3`));
         id++;
       }
     }
@@ -70,7 +77,7 @@
     map.on('load', () => {
       map.addSource('live-lines', {
         type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] }
+        data: { type: "FeatureCollection", features: [] }
       });
 
       map.addLayer({
@@ -86,8 +93,8 @@
       map.addSource('zones', {
         type: 'geojson',
         data: {
-          type: 'FeatureCollection',
-          features: zones.map(z => ({ type: 'Feature', geometry: z.geometry }))
+          type: "FeatureCollection",
+          features: zones.map(z => ({ type: "Feature", geometry: z.geometry }))
         }
       });
 
@@ -100,77 +107,74 @@
           'line-width': 2
         }
       });
-
-      setInterval(updateMap, 3000);
     });
 
-    async function updateMap() {
-      try {
-        const res = await fetch('/api/geo');
-        const data = await res.json();
-        map.getSource('live-lines').setData(data);
+    async function fetchAndUpdateLine() {
+      const res = await fetch('/api/geo');
+      const data = await res.json();
+      map.getSource('live-lines').setData(data);
 
-        const features = data.features;
-        const lastFeature = features[features.length - 1];
+      const features = data.features;
+      const lastFeature = features[features.length - 1];
+      if (lastFeature?.geometry?.coordinates?.length) {
+        const line = lastFeature.geometry.coordinates;
+        const lastCoord = line[line.length - 1];
+        const pt = turf.point(lastCoord);
 
-        if (
-          lastFeature &&
-          lastFeature.geometry &&
-          Array.isArray(lastFeature.geometry.coordinates)
-        ) {
-          const line = lastFeature.geometry.coordinates;
-          const lastCoord = line[line.length - 1];
-          if (Array.isArray(lastCoord) && typeof lastCoord[0] === 'number' && typeof lastCoord[1] === 'number') {
-            const pt = turf.point(lastCoord);
-            zones.forEach((zone, i) => {
-              if (turf.booleanPointInPolygon(pt, zone)) {
-                if (!zoneFlags[i]) {
-                  sounds[i].play();
-                  zoneFlags[i] = true;
-                }
-              } else {
-                zoneFlags[i] = false;
-              }
-            });
+        zones.forEach((zone, i) => {
+          if (turf.booleanPointInPolygon(pt, zone)) {
+            if (!zoneFlags[i]) {
+              sounds[i].loop = true;
+              sounds[i].play();
+              zoneFlags[i] = true;
+            }
+          } else {
+            if (zoneFlags[i]) {
+              sounds[i].pause();
+              sounds[i].currentTime = 0;
+              zoneFlags[i] = false;
+            }
           }
-        }
-      } catch (err) {
-        console.error('Failed to fetch geo or check zones', err);
+        });
       }
     }
 
     let watchId = null;
-    const btn = document.getElementById('toggleShare');
-    const nameInput = document.getElementById('name');
+    document.getElementById('start').onclick = () => {
+      const name = document.getElementById('name').value.trim();
+      if (!name) return alert('Enter your name');
 
-    btn.addEventListener('click', () => {
-      if (watchId) {
+      if (!navigator.geolocation) return alert('Geolocation not supported');
+
+      watchId = navigator.geolocation.watchPosition(pos => {
+        fetch('/api/geo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            coords: {
+              lat: pos.coords.latitude,
+              lng: pos.coords.longitude
+            },
+            timestamp: Date.now()
+          })
+        });
+      }, err => console.error(err), {
+        enableHighAccuracy: true,
+        maximumAge: 1000,
+        timeout: 5000
+      });
+
+      setInterval(fetchAndUpdateLine, 3000);
+    };
+
+    document.getElementById('stop').onclick = () => {
+      if (watchId !== null) {
         navigator.geolocation.clearWatch(watchId);
-        btn.textContent = 'Start Sharing';
         watchId = null;
-      } else {
-        const name = nameInput.value || 'anon';
-        watchId = navigator.geolocation.watchPosition(
-          pos => {
-            fetch('/api/geo', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                name,
-                coords: {
-                  lat: pos.coords.latitude,
-                  lng: pos.coords.longitude
-                },
-                timestamp: Date.now()
-              })
-            }).catch(console.error);
-          },
-          err => console.error(err),
-          { enableHighAccuracy: true, maximumAge: 0 }
-        );
-        btn.textContent = 'Stop Sharing';
+        alert('Stopped sharing');
       }
-    });
+    };
   </script>
 </body>
 </html>
