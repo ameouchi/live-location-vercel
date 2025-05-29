@@ -40,10 +40,10 @@
 const zoneFlags = new Array(9).fill(false);
 const sounds = [];
 
-const centerLng = -71.12953;
-const centerLat = 42.34836 - 0.000099;  // moved ~6 meters south
-const spacing = 0.000025;               // tighter grid
-const size = 0.00002;                   // smaller squares
+const centerLng = -71.12953 - 0.00004;   // shift west
+const centerLat = 42.34836 - 0.000054;   // shift south
+const spacing = 0.00002;                 // closer
+const size = 0.000015;                   // smaller
 
 let id = 0;
 for (let row = -1; row <= 1; row++) {
