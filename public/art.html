@@ -42,8 +42,8 @@ const sounds = [];
 
 const centerLng = -71.12953 - 0.00007;
 const centerLat = 42.34836 - 0.000085;
-const spacing = 0.000018;
-const size = 0.000012;
+const spacing = 0.000015;
+const size = 0.000013;
 
 let id = 0;
 for (let row = -2.5; row <= 2.5; row++) {
@@ -132,15 +132,21 @@ for (let row = -2.5; row <= 2.5; row++) {
             const pt = turf.point(lastCoord);
 
             zones.forEach((zone, i) => {
-              if (turf.booleanPointInPolygon(pt, zone)) {
-                if (!zoneFlags[i]) {
-                  sounds[i].play();
-                  zoneFlags[i] = true;
-                }
-              } else {
-                zoneFlags[i] = false;
-              }
-            });
+  if (turf.booleanPointInPolygon(pt, zone)) {
+    if (!zoneFlags[i]) {
+      sounds[i].loop = true;
+      sounds[i].play();
+      zoneFlags[i] = true;
+    }
+  } else {
+    if (zoneFlags[i]) {
+      sounds[i].pause();
+      sounds[i].currentTime = 0;
+      zoneFlags[i] = false;
+    }
+  }
+});
+
           }
         }
       } catch (err) {
