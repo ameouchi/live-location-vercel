@@ -3,7 +3,7 @@ let userPaths = {};
 export default async function handler(req, res) {
   if (req.method === 'POST') {
     const { name, coords, timestamp } = req.body;
-    if (!name || !coords) return res.status(400).send('Missing data');
+    if (!name || !coords || !timestamp) return res.status(400).send('Missing data');
     if (!userPaths[name]) userPaths[name] = [];
     userPaths[name].push({ ...coords, timestamp });
     return res.status(200).send('OK');

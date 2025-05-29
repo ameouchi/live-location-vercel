@@ -140,48 +140,43 @@
     }
 
     let watchId = null;
-    let intervalId = null;
-
     document.getElementById('start').onclick = () => {
-      const name = document.getElementById('name').value.trim();
-      if (!name) return alert('Enter your name');
+  const name = document.getElementById('name').value.trim();
+  if (!name) return alert('Enter your name');
 
-      if (!navigator.geolocation) return alert('Geolocation not supported');
+  if (!navigator.geolocation) return alert('Geolocation not supported');
 
-      watchId = navigator.geolocation.watchPosition(pos => {
-        fetch('/api/geo', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name,
-            coords: {
-              lat: pos.coords.latitude,
-              lng: pos.coords.longitude
-            },
-            timestamp: Date.now()
-          })
-        });
-      }, err => console.error(err), {
-        enableHighAccuracy: true,
-        maximumAge: 1000,
-        timeout: 5000
-      });
+  watchId = navigator.geolocation.watchPosition(pos => {
+    fetch('/api/geo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        coords: {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude
+        },
+        timestamp: Date.now()
+      })
+    });
+  }, err => console.error(err), {
+    enableHighAccuracy: true,
+    maximumAge: 1000,
+    timeout: 5000
+  });
 
-      // Start real-time sound and line update
-      fetchAndUpdateLine(); // immediate
-      intervalId = setInterval(fetchAndUpdateLine, 500);
-    };
+  // 🔊 Immediately start checking sound zones
+  fetchAndUpdateLine();
+  setInterval(fetchAndUpdateLine, 500);
+};
+
 
     document.getElementById('stop').onclick = () => {
       if (watchId !== null) {
         navigator.geolocation.clearWatch(watchId);
         watchId = null;
+        alert('Stopped sharing');
       }
-      if (intervalId !== null) {
-        clearInterval(intervalId);
-        intervalId = null;
-      }
-      alert('Stopped sharing');
     };
   </script>
 </body>
