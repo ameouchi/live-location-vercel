@@ -2,15 +2,13 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Geofence Sound Zones with Line Tracking</title>
+  <title>Geofence Sound Zones (Mapbox Only)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
-  <script src="https://cdn.jsdelivr.net/npm/deck.gl@8.9.27/dist.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
   <style>
-    body { margin: 0; overflow: hidden; }
-    #map { position: absolute; width: 100vw; height: 100vh; }
+    body { margin: 0; padding: 0; }
+    #map { position: absolute; top: 0; bottom: 0; width: 100%; }
     #startButton {
       position: absolute;
       top: 50%;
@@ -30,109 +28,135 @@
   <div id="map"></div>
   <button id="startButton">Start</button>
   <script>
-    const accessToken = 'pk.eyJ1IjoiZ2FieWNhcnUiLCJhIjoiY203dzI5eTRpMDExeDJqcHk0a2JjaWp4diJ9.Voohpst6Zz-ZN7MZ_M3BUw';
-    mapboxgl.accessToken = accessToken;
+    mapboxgl.accessToken = 'pk.eyJ1IjoiZ2FieWNhcnUiLCJhIjoiY203dzI5eTRpMDExeDJqcHk0a2JjaWp4diJ9.Voohpst6Zz-ZN7MZ_M3BUw';
 
     const map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/gabycaru/cm8d60fxc00rg01s5hlv55yn1?optimize=true',
-      center: [-71.12959099075543, 42.34826632541306],
+      center: [-71.12959, 42.34827],
       zoom: 18
     });
 
-    const ZONE_A = turf.polygon([[
-      [-71.12966, 42.34822],
-      [-71.12952, 42.34822],
-      [-71.12952, 42.34831],
-      [-71.12966, 42.34831],
-      [-71.12966, 42.34822]
-    ]]);
+    const ZONE_A = {
+      id: 'zone-a',
+      type: 'Feature',
+      properties: { name: 'Zone A' },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [-71.12966, 42.34822],
+          [-71.12952, 42.34822],
+          [-71.12952, 42.34831],
+          [-71.12966, 42.34831],
+          [-71.12966, 42.34822]
+        ]]
+      }
+    };
 
-    const ZONE_B = turf.polygon([[
-      [-71.12952, 42.34822],
-      [-71.12938, 42.34822],
-      [-71.12938, 42.34831],
-      [-71.12952, 42.34831],
-      [-71.12952, 42.34822]
-    ]]);
+    const ZONE_B = {
+      id: 'zone-b',
+      type: 'Feature',
+      properties: { name: 'Zone B' },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [-71.12952, 42.34822],
+          [-71.12938, 42.34822],
+          [-71.12938, 42.34831],
+          [-71.12952, 42.34831],
+          [-71.12952, 42.34822]
+        ]]
+      }
+    };
 
-    const zones = [
-      { polygon: ZONE_A, color: [255, 0, 0], sound: new Audio('https://www.soundjay.com/button/beep-07.mp3') },
-      { polygon: ZONE_B, color: [0, 0, 255], sound: new Audio('https://www.soundjay.com/button/beep-08b.mp3') }
+    const zones = [ZONE_A, ZONE_B];
+    const sounds = [
+      new Audio('https://www.soundjay.com/button/beep-07.mp3'),
+      new Audio('https://www.soundjay.com/button/beep-08b.mp3')
     ];
 
-    let lastZoneIndex = null;
-    let userPath = [];
-
-    const overlay = new deck.MapboxOverlay({
-      get layers() {
-        const zoneLayers = zones.map((z, i) =>
-          new deck.PolygonLayer({
-            id: `zone-${i}`,
-            data: [z.polygon],
-            getPolygon: f => f.geometry.coordinates,
-            getLineColor: z.color,
-            getLineWidth: 3,
-            lineWidthMinPixels: 2,
-            stroked: true,
-            filled: false
-          })
-        );
-
-        const pathLayer = userPath.length > 1
-          ? new deck.LineLayer({
-              id: 'user-line',
-              data: [userPath],
-              getSourcePosition: d => d[0],
-              getTargetPosition: d => d[1],
-              getColor: [255, 0, 0],
-              getWidth: 4,
-              widthMinPixels: 2
-            })
-          : null;
-
-        return [...zoneLayers, ...(pathLayer ? [pathLayer] : [])];
-      }
-    });
+    let pathCoords = [];
+    let lastZone = null;
 
     map.on('load', () => {
-      map.addControl(overlay);
+      map.addSource('zones', {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: zones
+        }
+      });
+
+      map.addLayer({
+        id: 'zone-borders',
+        type: 'line',
+        source: 'zones',
+        paint: {
+          'line-color': ['match', ['get', 'name'], 'Zone A', '#ff0000', 'Zone B', '#0000ff', '#888'],
+          'line-width': 3
+        }
+      });
+
+      map.addSource('user-path', {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: []
+          }
+        }
+      });
+
+      map.addLayer({
+        id: 'path-line',
+        type: 'line',
+        source: 'user-path',
+        paint: {
+          'line-color': '#ff0000',
+          'line-width': 4
+        }
+      });
     });
 
     document.getElementById('startButton').addEventListener('click', () => {
       document.getElementById('startButton').style.display = 'none';
 
       // Unlock audio
-      zones.forEach(z => z.sound.play().then(() => z.sound.pause()));
+      sounds.forEach(s => s.play().then(() => s.pause()));
 
       navigator.geolocation.watchPosition(pos => {
         const coords = [pos.coords.longitude, pos.coords.latitude];
-        const point = turf.point(coords);
+        pathCoords.push(coords);
 
-        // Add new segment to userPath
-        if (userPath.length === 0) {
-          userPath.push([coords, coords]);
-        } else {
-          userPath.push([userPath[userPath.length - 1][1], coords]);
-        }
+        const userPoint = turf.point(coords);
 
-        let insideIndex = null;
-        zones.forEach((z, i) => {
-          if (turf.booleanPointInPolygon(point, z.polygon)) {
-            insideIndex = i;
+        let currentZone = null;
+        zones.forEach((zone, i) => {
+          if (turf.booleanPointInPolygon(userPoint, zone)) {
+            currentZone = i;
           }
         });
 
-        if (insideIndex !== null && insideIndex !== lastZoneIndex) {
-          zones[insideIndex].sound.play();
-          lastZoneIndex = insideIndex;
+        if (currentZone !== null && currentZone !== lastZone) {
+          sounds[currentZone].play();
+          lastZone = currentZone;
         }
 
-        if (insideIndex === null) {
-          lastZoneIndex = null;
+        if (currentZone === null) {
+          lastZone = null;
         }
 
-        overlay.setProps({});
+        const lineData = {
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: pathCoords
+          }
+        };
+
+        const source = map.getSource('user-path');
+        if (source) source.setData(lineData);
       }, err => {
         console.error('Geolocation error:', err);
       }, {
