@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Share Location</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin-top: 50px; }
+    #start, #stop { font-size: 24px; padding: 20px 40px; border-radius: 50%; margin: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Live Location Sharing</h1>
+  <input id="name" type="text" placeholder="Enter your name" />
+  <br><br>
+  <button id="start">Start Sharing</button>
+  <button id="stop">Stop Sharing</button>
+
+  <script>
+    let watchId = null;
+    document.getElementById('start').onclick = () => {
+      const name = document.getElementById('name').value.trim();
+      if (!name) return alert('Enter your name');
+      if (!navigator.geolocation) return alert('Geolocation not supported');
+
+      watchId = navigator.geolocation.watchPosition(pos => {
+        fetch('/api/geo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            coords: {
+              lat: pos.coords.latitude,
+              lng: pos.coords.longitude
+            },
+            timestamp: Date.now()
+          })
+        });
+      });
+    };
+
+    document.getElementById('stop').onclick = () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+        alert('Stopped sharing');
+      }
+    };
+  </script>
+</body>
+</html>
