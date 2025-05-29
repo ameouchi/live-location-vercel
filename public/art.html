@@ -1,28 +1,30 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Live Art Map</title>
+  <title>Art Map</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
     body { margin: 0; padding: 0; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
-    #startButton {
+    #startBtn {
       position: absolute;
-      top: 10px;
-      left: 10px;
-      z-index: 10;
-      padding: 8px 16px;
-      font-size: 16px;
+      top: 20px;
+      left: 20px;
+      padding: 10px 20px;
+      background: white;
+      border: 1px solid #ccc;
+      z-index: 999;
+      cursor: pointer;
     }
   </style>
 </head>
 <body>
-  <button id="startButton">Start</button>
   <div id="map"></div>
+  <button id="startBtn">Start</button>
 
   <script>
     mapboxgl.accessToken = 'pk.eyJ1IjoiZ2FieWNhcnUiLCJhIjoiY203dzI5eTRpMDExeDJqcHk0a2JjaWp4diJ9.Voohpst6Zz-ZN7MZ_M3BUw';
@@ -30,34 +32,49 @@
     const map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/gabycaru/cm8d60fxc00rg01s5hlv55yn1?optimize=true',
-      center: [-71.1295, 42.3482],
-      zoom: 17
+      center: [-71.1293, 42.3481],
+      zoom: 18
     });
 
+    // Slightly moved rectangles south
     const zone1 = turf.polygon([[
-  [-71.12959099075543, 42.34826632541306],
-  [-71.12939099075543, 42.34826632541306],
-  [-71.12939099075543, 42.34846632541306],
-  [-71.12959099075543, 42.34846632541306],
-  [-71.12959099075543, 42.34826632541306]
-]]);
+      [-71.12959099075543, 42.34816632541306],
+      [-71.12939099075543, 42.34816632541306],
+      [-71.12939099075543, 42.34836632541306],
+      [-71.12959099075543, 42.34836632541306],
+      [-71.12959099075543, 42.34816632541306]
+    ]]);
 
-const zone2 = turf.polygon([[
-  [-71.12919099075543, 42.34826632541306],
-  [-71.12899099075543, 42.34826632541306],
-  [-71.12899099075543, 42.34846632541306],
-  [-71.12919099075543, 42.34846632541306],
-  [-71.12919099075543, 42.34826632541306]
-]]);
+    const zone2 = turf.polygon([[
+      [-71.12919099075543, 42.34816632541306],
+      [-71.12899099075543, 42.34816632541306],
+      [-71.12899099075543, 42.34836632541306],
+      [-71.12919099075543, 42.34836632541306],
+      [-71.12919099075543, 42.34816632541306]
+    ]]);
 
+    const zoneFlags = [false, false];
     const sounds = [
       new Audio('https://upload.wikimedia.org/wikipedia/commons/e/e6/Doorbell-chime.mp3'),
       new Audio('https://upload.wikimedia.org/wikipedia/commons/3/3c/Walking_on_gravel.ogg')
     ];
-    let zoneFlags = [false, false];
 
     map.on('load', () => {
-      // Draw rectangles
+      map.addSource('live-lines', {
+        type: 'geojson',
+        data: { type: "FeatureCollection", features: [] }
+      });
+
+      map.addLayer({
+        id: 'live-lines',
+        type: 'line',
+        source: 'live-lines',
+        paint: {
+          'line-color': '#FF0000',
+          'line-width': 4
+        }
+      });
+
       map.addSource('zones', {
         type: 'geojson',
         data: {
@@ -74,30 +91,15 @@ const zone2 = turf.polygon([[
         type: 'line',
         source: 'zones',
         paint: {
-          'line-color': ['case', ['==', ['get', 'id'], 0], '#ff0000', '#0000ff'],
-          'line-width': 3
+          'line-color': '#0000FF',
+          'line-width': 2
         }
       });
+    });
 
-      map.addSource('live-lines', {
-        type: 'geojson',
-        data: { type: "FeatureCollection", features: [] }
-      });
-
-      map.addLayer({
-        id: 'live-lines',
-        type: 'line',
-        source: 'live-lines',
-        paint: {
-          'line-color': '#FF0000',
-          'line-width': 4
-        }
-      });
-
-      document.getElementById('startButton').addEventListener('click', () => {
-        document.getElementById('startButton').style.display = 'none';
-        setInterval(updateMap, 3000);
-      });
+    document.getElementById('startBtn').addEventListener('click', () => {
+      updateMap(); // fetch immediately
+      setInterval(updateMap, 3000); // then poll every 3s
     });
 
     async function updateMap() {
@@ -106,24 +108,37 @@ const zone2 = turf.polygon([[
         const data = await res.json();
         map.getSource('live-lines').setData(data);
 
-        // Check geofence triggers
         const features = data.features;
-        if (features.length > 0) {
-          const coords = features[features.length - 1].geometry.coordinates;
-          const pt = turf.point(coords);
+        const lastFeature = features[features.length - 1];
 
-          if (turf.booleanPointInPolygon(pt, zone1) && !zoneFlags[0]) {
-            sounds[0].play();
-            zoneFlags[0] = true;
-          } else if (!turf.booleanPointInPolygon(pt, zone1)) {
-            zoneFlags[0] = false;
-          }
+        if (
+          lastFeature &&
+          lastFeature.geometry &&
+          Array.isArray(lastFeature.geometry.coordinates)
+        ) {
+          const line = lastFeature.geometry.coordinates;
+          const lastCoord = line[line.length - 1];
 
-          if (turf.booleanPointInPolygon(pt, zone2) && !zoneFlags[1]) {
-            sounds[1].play();
-            zoneFlags[1] = true;
-          } else if (!turf.booleanPointInPolygon(pt, zone2)) {
-            zoneFlags[1] = false;
+          if (
+            Array.isArray(lastCoord) &&
+            typeof lastCoord[0] === 'number' &&
+            typeof lastCoord[1] === 'number'
+          ) {
+            const pt = turf.point(lastCoord);
+
+            if (turf.booleanPointInPolygon(pt, zone1) && !zoneFlags[0]) {
+              sounds[0].play();
+              zoneFlags[0] = true;
+            } else if (!turf.booleanPointInPolygon(pt, zone1)) {
+              zoneFlags[0] = false;
+            }
+
+            if (turf.booleanPointInPolygon(pt, zone2) && !zoneFlags[1]) {
+              sounds[1].play();
+              zoneFlags[1] = true;
+            } else if (!turf.booleanPointInPolygon(pt, zone2)) {
+              zoneFlags[1] = false;
+            }
           }
         }
       } catch (err) {
