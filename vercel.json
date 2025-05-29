@@ -2,6 +2,7 @@
   "routes": [
     { "src": "/api/geo", "dest": "/api/geo.js" },
     { "src": "/map", "dest": "/map.html" },
-    { "src": "/", "dest": "/index.html" }
+    { "src": "/art", "dest": "/public/art.html" },
+    { "src": "/", "dest": "/public/index.html" }
   ]
 }
