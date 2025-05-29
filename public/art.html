@@ -11,10 +11,24 @@
   <style>
     body { margin: 0; overflow: hidden; }
     #map { position: absolute; width: 100vw; height: 100vh; }
+    #startButton {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 16px 32px;
+      font-size: 18px;
+      background-color: black;
+      color: white;
+      border: none;
+      cursor: pointer;
+      z-index: 10;
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <button id="startButton">Start</button>
   <script>
     const accessToken = 'pk.eyJ1IjoiZ2FieWNhcnUiLCJhIjoiY203dzI5eTRpMDExeDJqcHk0a2JjaWp4diJ9.Voohpst6Zz-ZN7MZ_M3BUw';
     mapboxgl.accessToken = accessToken;
@@ -47,51 +61,78 @@
       { polygon: ZONE_B, color: [0, 0, 255], sound: new Audio('https://www.soundjay.com/button/beep-08b.mp3') }
     ];
 
+    let userLocation = null;
+    let lastZoneIndex = null;
+
     const overlay = new deck.MapboxOverlay({
-      layers: zones.map((z, i) =>
-        new deck.PolygonLayer({
-          id: `zone-${i}`,
-          data: [z.polygon],
-          getPolygon: f => f.geometry.coordinates,
-          getLineColor: z.color,
-          getLineWidth: .5,
-          lineWidthMinPixels: .5,
-          stroked: true,
-          filled: false
-        })
-      )
+      get layers() {
+        const zoneLayers = zones.map((z, i) =>
+          new deck.PolygonLayer({
+            id: `zone-${i}`,
+            data: [z.polygon],
+            getPolygon: f => f.geometry.coordinates,
+            getLineColor: z.color,
+            getLineWidth: 3,
+            lineWidthMinPixels: 2,
+            stroked: true,
+            filled: false
+          })
+        );
+
+        const dotLayer = userLocation
+          ? new deck.ScatterplotLayer({
+              id: 'user-dot',
+              data: [userLocation],
+              getPosition: d => d,
+              getRadius: 6,
+              getFillColor: [255, 0, 0],
+              radiusMinPixels: 6
+            })
+          : null;
+
+        return [...zoneLayers, ...(dotLayer ? [dotLayer] : [])];
+      }
     });
 
     map.on('load', () => {
       map.addControl(overlay);
     });
 
-    let lastZoneIndex = null;
+    document.getElementById('startButton').addEventListener('click', () => {
+      document.getElementById('startButton').style.display = 'none';
 
-    navigator.geolocation.watchPosition(pos => {
-      const point = turf.point([pos.coords.longitude, pos.coords.latitude]);
-      let insideIndex = null;
+      // Unlock audio context by calling play once
+      zones.forEach(z => z.sound.play().then(() => z.sound.pause()));
 
-      zones.forEach((z, i) => {
-        if (turf.booleanPointInPolygon(point, z.polygon)) {
-          insideIndex = i;
+      navigator.geolocation.watchPosition(pos => {
+        const coords = [pos.coords.longitude, pos.coords.latitude];
+        const point = turf.point(coords);
+        userLocation = coords;
+
+        let insideIndex = null;
+        zones.forEach((z, i) => {
+          if (turf.booleanPointInPolygon(point, z.polygon)) {
+            insideIndex = i;
+          }
+        });
+
+        if (insideIndex !== null && insideIndex !== lastZoneIndex) {
+          zones[insideIndex].sound.play();
+          lastZoneIndex = insideIndex;
         }
+
+        if (insideIndex === null) {
+          lastZoneIndex = null;
+        }
+
+        overlay.setProps({});
+      }, err => {
+        console.error('Geolocation error:', err);
+      }, {
+        enableHighAccuracy: true,
+        maximumAge: 1000,
+        timeout: 5000
       });
-
-      if (insideIndex !== null && insideIndex !== lastZoneIndex) {
-        zones[insideIndex].sound.play();
-        lastZoneIndex = insideIndex;
-      }
-
-      if (insideIndex === null) {
-        lastZoneIndex = null;
-      }
-    }, err => {
-      console.error('Geolocation error:', err);
-    }, {
-      enableHighAccuracy: true,
-      maximumAge: 1000,
-      timeout: 5000
     });
   </script>
 </body>
