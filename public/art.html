@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <title>Live Art Map</title>
   <meta charset="utf-8" />
-  <title>Geofence Sound Zones (Mapbox Only)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
@@ -12,161 +12,122 @@
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
     #startButton {
       position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      padding: 16px 32px;
-      font-size: 18px;
-      background-color: black;
-      color: white;
-      border: none;
-      cursor: pointer;
+      top: 10px;
+      left: 10px;
       z-index: 10;
+      padding: 8px 16px;
+      font-size: 16px;
     }
   </style>
 </head>
 <body>
-  <div id="map"></div>
   <button id="startButton">Start</button>
+  <div id="map"></div>
+
   <script>
     mapboxgl.accessToken = 'pk.eyJ1IjoiZ2FieWNhcnUiLCJhIjoiY203dzI5eTRpMDExeDJqcHk0a2JjaWp4diJ9.Voohpst6Zz-ZN7MZ_M3BUw';
 
     const map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/gabycaru/cm8d60fxc00rg01s5hlv55yn1?optimize=true',
-      center: [-71.12959, 42.34827],
-      zoom: 18
+      center: [-71.1295, 42.3482],
+      zoom: 17
     });
 
-    const ZONE_A = {
-      id: 'zone-a',
-      type: 'Feature',
-      properties: { name: 'Zone A' },
-      geometry: {
-        type: 'Polygon',
-        coordinates: [[
-          [-71.12966, 42.34822],
-          [-71.12952, 42.34822],
-          [-71.12952, 42.34831],
-          [-71.12966, 42.34831],
-          [-71.12966, 42.34822]
-        ]]
-      }
-    };
-
-    const ZONE_B = {
-      id: 'zone-b',
-      type: 'Feature',
-      properties: { name: 'Zone B' },
-      geometry: {
-        type: 'Polygon',
-        coordinates: [[
-          [-71.12952, 42.34822],
-          [-71.12938, 42.34822],
-          [-71.12938, 42.34831],
-          [-71.12952, 42.34831],
-          [-71.12952, 42.34822]
-        ]]
-      }
-    };
-
-    const zones = [ZONE_A, ZONE_B];
+    const zone1 = turf.polygon([[[
+      -71.12959099075543, 42.34826632541306,
+      -71.12939099075543, 42.34826632541306,
+      -71.12939099075543, 42.34846632541306,
+      -71.12959099075543, 42.34846632541306,
+      -71.12959099075543, 42.34826632541306
+    ]]]);
+    const zone2 = turf.polygon([[[
+      -71.12919099075543, 42.34826632541306,
+      -71.12899099075543, 42.34826632541306,
+      -71.12899099075543, 42.34846632541306,
+      -71.12919099075543, 42.34846632541306,
+      -71.12919099075543, 42.34826632541306
+    ]]]);
     const sounds = [
-  new Audio('https://upload.wikimedia.org/wikipedia/commons/3/3c/Walking_on_gravel.ogg'),
-  new Audio('https://upload.wikimedia.org/wikipedia/commons/e/e6/Doorbell-chime.mp3')
-];
-
-
-    let pathCoords = [];
-    let lastZone = null;
+      new Audio('https://upload.wikimedia.org/wikipedia/commons/e/e6/Doorbell-chime.mp3'),
+      new Audio('https://upload.wikimedia.org/wikipedia/commons/3/3c/Walking_on_gravel.ogg')
+    ];
+    let zoneFlags = [false, false];
 
     map.on('load', () => {
+      // Draw rectangles
       map.addSource('zones', {
         type: 'geojson',
         data: {
-          type: 'FeatureCollection',
-          features: zones
+          type: "FeatureCollection",
+          features: [
+            { type: "Feature", geometry: zone1.geometry },
+            { type: "Feature", geometry: zone2.geometry }
+          ]
         }
       });
 
       map.addLayer({
-        id: 'zone-borders',
+        id: 'zones',
         type: 'line',
         source: 'zones',
         paint: {
-          'line-color': ['match', ['get', 'name'], 'Zone A', '#ff0000', 'Zone B', '#0000ff', '#888'],
+          'line-color': ['case', ['==', ['get', 'id'], 0], '#ff0000', '#0000ff'],
           'line-width': 3
         }
       });
 
-      map.addSource('user-path', {
+      map.addSource('live-lines', {
         type: 'geojson',
-        data: {
-          type: 'Feature',
-          geometry: {
-            type: 'LineString',
-            coordinates: []
-          }
-        }
+        data: { type: "FeatureCollection", features: [] }
       });
 
       map.addLayer({
-        id: 'path-line',
+        id: 'live-lines',
         type: 'line',
-        source: 'user-path',
+        source: 'live-lines',
         paint: {
-          'line-color': '#ff0000',
+          'line-color': '#FF0000',
           'line-width': 4
         }
       });
-    });
 
-    document.getElementById('startButton').addEventListener('click', () => {
-      document.getElementById('startButton').style.display = 'none';
-
-      // Unlock audio
-      sounds.forEach(s => s.play().then(() => s.pause()));
-
-      navigator.geolocation.watchPosition(pos => {
-        const coords = [pos.coords.longitude, pos.coords.latitude];
-        pathCoords.push(coords);
-
-        const userPoint = turf.point(coords);
-
-        let currentZone = null;
-        zones.forEach((zone, i) => {
-          if (turf.booleanPointInPolygon(userPoint, zone)) {
-            currentZone = i;
-          }
-        });
-
-        if (currentZone !== null && currentZone !== lastZone) {
-          sounds[currentZone].play();
-          lastZone = currentZone;
-        }
-
-        if (currentZone === null) {
-          lastZone = null;
-        }
-
-        const lineData = {
-          type: 'Feature',
-          geometry: {
-            type: 'LineString',
-            coordinates: pathCoords
-          }
-        };
-
-        const source = map.getSource('user-path');
-        if (source) source.setData(lineData);
-      }, err => {
-        console.error('Geolocation error:', err);
-      }, {
-        enableHighAccuracy: true,
-        maximumAge: 1000,
-        timeout: 5000
+      document.getElementById('startButton').addEventListener('click', () => {
+        document.getElementById('startButton').style.display = 'none';
+        setInterval(updateMap, 3000);
       });
     });
+
+    async function updateMap() {
+      try {
+        const res = await fetch('/api/geo');
+        const data = await res.json();
+        map.getSource('live-lines').setData(data);
+
+        // Check geofence triggers
+        const features = data.features;
+        if (features.length > 0) {
+          const coords = features[features.length - 1].geometry.coordinates;
+          const pt = turf.point(coords);
+
+          if (turf.booleanPointInPolygon(pt, zone1) && !zoneFlags[0]) {
+            sounds[0].play();
+            zoneFlags[0] = true;
+          } else if (!turf.booleanPointInPolygon(pt, zone1)) {
+            zoneFlags[0] = false;
+          }
+
+          if (turf.booleanPointInPolygon(pt, zone2) && !zoneFlags[1]) {
+            sounds[1].play();
+            zoneFlags[1] = true;
+          } else if (!turf.booleanPointInPolygon(pt, zone2)) {
+            zoneFlags[1] = false;
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch geo or check zones', err);
+      }
+    }
   </script>
 </body>
 </html>
