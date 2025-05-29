@@ -1,31 +1,33 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Combined Location + Sound Grid</title>
+  <title>Combined Map + Sound + UI</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
-    body { margin: 0; padding: 0; }
+    body { margin: 0; padding: 0; font-family: sans-serif; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
     #controls {
       position: absolute;
-      top: 10px;
-      left: 10px;
+      z-index: 999;
+      top: 20px;
+      left: 20px;
       background: white;
       padding: 10px;
-      z-index: 999;
+      border-radius: 5px;
       border: 1px solid #ccc;
     }
+    #controls input { width: 120px; margin-right: 10px; }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div id="controls">
-    <input type="text" id="name" placeholder="Your name" />
-    <button id="shareBtn">Start Sharing</button>
+    <input id="nameInput" placeholder="Your Name" />
+    <button id="startBtn">Start</button>
   </div>
 
   <script>
@@ -38,8 +40,6 @@
       zoom: 20
     });
 
-    let sharing = false;
-    let watchId = null;
     const zones = [];
     const zoneFlags = new Array(36).fill(false);
     const sounds = [];
@@ -54,6 +54,7 @@
       for (let col = -2.5; col <= 2.5; col++) {
         const lng = centerLng + col * spacing;
         const lat = centerLat + row * spacing;
+
         const polygon = turf.polygon([[
           [lng, lat],
           [lng + size, lat],
@@ -61,6 +62,7 @@
           [lng, lat + size],
           [lng, lat]
         ]]);
+
         zones.push(polygon);
         sounds.push(new Audio(`/zone_sound${id + 1}.mp3`));
         id++;
@@ -70,7 +72,7 @@
     map.on('load', () => {
       map.addSource('live-lines', {
         type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] }
+        data: { type: "FeatureCollection", features: [] }
       });
 
       map.addLayer({
@@ -86,8 +88,8 @@
       map.addSource('zones', {
         type: 'geojson',
         data: {
-          type: 'FeatureCollection',
-          features: zones.map(z => ({ type: 'Feature', geometry: z.geometry }))
+          type: "FeatureCollection",
+          features: zones.map(z => ({ type: "Feature", geometry: z.geometry }))
         }
       });
 
@@ -100,37 +102,11 @@
           'line-width': 2
         }
       });
-
-      updateMap();
-      setInterval(updateMap, 3000);
     });
 
-    document.getElementById('shareBtn').addEventListener('click', () => {
-      const name = document.getElementById('name').value.trim();
-      if (!name) return alert('Please enter your name');
-
-      if (!sharing) {
-        watchId = navigator.geolocation.watchPosition(
-          pos => {
-            fetch('/api/location', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                name,
-                coords: [pos.coords.longitude, pos.coords.latitude]
-              })
-            });
-          },
-          err => console.error(err),
-          { enableHighAccuracy: true, maximumAge: 0 }
-        );
-        sharing = true;
-        document.getElementById('shareBtn').textContent = 'Stop Sharing';
-      } else {
-        navigator.geolocation.clearWatch(watchId);
-        sharing = false;
-        document.getElementById('shareBtn').textContent = 'Start Sharing';
-      }
+    document.getElementById('startBtn').addEventListener('click', () => {
+      setInterval(updateMap, 3000);
+      updateMap();
     });
 
     async function updateMap() {
@@ -142,12 +118,21 @@
         const features = data.features;
         const lastFeature = features[features.length - 1];
 
-        if (lastFeature && lastFeature.geometry && Array.isArray(lastFeature.geometry.coordinates)) {
+        if (
+          lastFeature &&
+          lastFeature.geometry &&
+          Array.isArray(lastFeature.geometry.coordinates)
+        ) {
           const line = lastFeature.geometry.coordinates;
           const lastCoord = line[line.length - 1];
 
-          if (Array.isArray(lastCoord) && typeof lastCoord[0] === 'number' && typeof lastCoord[1] === 'number') {
+          if (
+            Array.isArray(lastCoord) &&
+            typeof lastCoord[0] === 'number' &&
+            typeof lastCoord[1] === 'number'
+          ) {
             const pt = turf.point(lastCoord);
+
             zones.forEach((zone, i) => {
               if (turf.booleanPointInPolygon(pt, zone)) {
                 if (!zoneFlags[i]) {
