@@ -37,17 +37,17 @@
     });
 
     const zones = [];
-const zoneFlags = new Array(9).fill(false);
+const zoneFlags = new Array(36).fill(false);
 const sounds = [];
 
-const centerLng = -71.12953 - 0.00004;   // shift west
-const centerLat = 42.34836 - 0.000054;   // shift south
-const spacing = 0.00002;                 // closer
-const size = 0.000015;                   // smaller
+const centerLng = -71.12953 - 0.00007;
+const centerLat = 42.34836 - 0.000085;
+const spacing = 0.000018;
+const size = 0.000012;
 
 let id = 0;
-for (let row = -1; row <= 1; row++) {
-  for (let col = -1; col <= 1; col++) {
+for (let row = -2.5; row <= 2.5; row++) {
+  for (let col = -2.5; col <= 2.5; col++) {
     const lng = centerLng + col * spacing;
     const lat = centerLat + row * spacing;
 
@@ -64,6 +64,7 @@ for (let row = -1; row <= 1; row++) {
     id++;
   }
 }
+
 
 
     map.on('load', () => {
