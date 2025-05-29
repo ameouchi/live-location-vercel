@@ -3,6 +3,7 @@
     { "src": "/api/geo", "dest": "/api/geo.js" },
     { "src": "/map", "dest": "/map.html" },
     { "src": "/art", "dest": "/art.html" },
+    { "src": "/combined", "dest": "/combined.html" },
     { "src": "/", "dest": "/public/index.html" }
   ]
 }
