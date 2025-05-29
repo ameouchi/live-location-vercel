@@ -110,92 +110,73 @@
     });
 
     async function fetchAndUpdateLine() {
-      try {
-        const res = await fetch('/api/geo');
-        const data = await res.json();
-        map.getSource('live-lines').setData(data);
+      const res = await fetch('/api/geo');
+      const data = await res.json();
+      map.getSource('live-lines').setData(data);
 
-        const features = data.features;
-        const lastFeature = features[features.length - 1];
-        if (lastFeature?.geometry?.coordinates?.length) {
-          const line = lastFeature.geometry.coordinates;
-          const lastCoord = line[line.length - 1];
-          const pt = turf.point(lastCoord);
-          triggerSounds(pt);
-        }
-      } catch (err) {
-        console.error('Error fetching or updating line:', err);
+      const features = data.features;
+      const lastFeature = features[features.length - 1];
+      if (lastFeature?.geometry?.coordinates?.length) {
+        const line = lastFeature.geometry.coordinates;
+        const lastCoord = line[line.length - 1];
+        const pt = turf.point(lastCoord);
+
+        zones.forEach((zone, i) => {
+          if (turf.booleanPointInPolygon(pt, zone)) {
+            if (!zoneFlags[i]) {
+              sounds[i].loop = true;
+              sounds[i].play();
+              zoneFlags[i] = true;
+            }
+          } else {
+            if (zoneFlags[i]) {
+              sounds[i].pause();
+              sounds[i].currentTime = 0;
+              zoneFlags[i] = false;
+            }
+          }
+        });
       }
-    }
-
-    function triggerSounds(pt) {
-      zones.forEach((zone, i) => {
-        if (turf.booleanPointInPolygon(pt, zone)) {
-          if (!zoneFlags[i]) {
-            sounds[i].loop = true;
-            sounds[i].play();
-            zoneFlags[i] = true;
-          }
-        } else {
-          if (zoneFlags[i]) {
-            sounds[i].pause();
-            sounds[i].currentTime = 0;
-            zoneFlags[i] = false;
-          }
-        }
-      });
     }
 
     let watchId = null;
-    let intervalId = null;
-
     document.getElementById('start').onclick = () => {
-      const name = document.getElementById('name').value.trim();
-      if (!name) return alert('Enter your name');
+  const name = document.getElementById('name').value.trim();
+  if (!name) return alert('Enter your name');
 
-      if (!navigator.geolocation) return alert('Geolocation not supported');
+  if (!navigator.geolocation) return alert('Geolocation not supported');
 
-      watchId = navigator.geolocation.watchPosition(pos => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
+  watchId = navigator.geolocation.watchPosition(pos => {
+    fetch('/api/geo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        coords: {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude
+        },
+        timestamp: Date.now()
+      })
+    });
+  }, err => console.error(err), {
+    enableHighAccuracy: true,
+    maximumAge: 1000,
+    timeout: 5000
+  });
 
-        // Send location to API
-        fetch('/api/geo', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name,
-            coords: { lat, lng },
-            timestamp: Date.now()
-          })
-        });
+  // 🔊 Immediately start checking sound zones
+  fetchAndUpdateLine();
+  setInterval(fetchAndUpdateLine, 500);
+};
 
-        // 🔊 Instant local detection
-        const pt = turf.point([lng, lat]);
-        triggerSounds(pt);
-      }, err => console.error(err), {
-        enableHighAccuracy: true,
-        maximumAge: 1000,
-        timeout: 5000
-      });
-
-      // ⏱ Poll for live line
-      if (!intervalId) {
-        fetchAndUpdateLine();
-        intervalId = setInterval(fetchAndUpdateLine, 3000);
-      }
-    };
 
     document.getElementById('stop').onclick = () => {
       if (watchId !== null) {
         navigator.geolocation.clearWatch(watchId);
         watchId = null;
+        alert('Stopped sharing');
       }
-      if (intervalId !== null) {
-        clearInterval(intervalId);
-        intervalId = null;
-      }
-      alert('Stopped sharing');
     };
   </script>
 </body>
