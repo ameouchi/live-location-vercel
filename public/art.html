@@ -10,10 +10,21 @@
   <style>
     body { margin: 0; padding: 0; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+    #startBtn {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      padding: 10px 20px;
+      background: white;
+      border: 1px solid #ccc;
+      z-index: 999;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <button id="startBtn">Start</button>
 
   <script>
     mapboxgl.accessToken = 'pk.eyJ1IjoiZ2FieWNhcnUiLCJhIjoiY203dzI5eTRpMDExeDJqcHk0a2JjaWp4diJ9.Voohpst6Zz-ZN7MZ_M3BUw';
@@ -91,10 +102,10 @@ for (let row = -2.5; row <= 2.5; row++) {
       });
     });
 
-    map.on('load', () => {
-  updateMap();
-  setInterval(updateMap, 3000);
-});
+    document.getElementById('startBtn').addEventListener('click', () => {
+      updateMap();
+      setInterval(updateMap, 3000);
+    });
 
     async function updateMap() {
       try {
