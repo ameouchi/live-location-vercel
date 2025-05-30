@@ -33,8 +33,6 @@
     <br>
     <button id="start">Start Sharing</button>
     <button id="stop">Stop Sharing</button>
-    <br>
-    <button id="toggleContours">Toggle Contours</button>
   </div>
 
   <script>
@@ -77,7 +75,7 @@
     }
 
     map.on('load', () => {
-      // Live lines
+      // Live location line
       map.addSource('live-lines', {
         type: 'geojson',
         data: { type: "FeatureCollection", features: [] }
@@ -112,22 +110,19 @@
         }
       });
 
-      // Contours
-      map.addSource('contours', {
+      // Contours from Dropbox
+      map.addSource('blinecont', {
         type: 'geojson',
-        data: 'blinecont.geojson'
+        data: 'https://www.dropbox.com/scl/fi/k8o7c5q2dwj07elm5hgzj/blinecont.geojson?rlkey=k4q7n3k847pj7j0pbr6l53aj4&raw=1'
       });
 
       map.addLayer({
-        id: 'contours-layer',
+        id: 'blinecont',
         type: 'line',
-        source: 'contours',
+        source: 'blinecont',
         paint: {
-          'line-color': '#0000FF',
-          'line-width': 2
-        },
-        layout: {
-          visibility: 'visible'
+          'line-color': '#00FF00',
+          'line-width': 3
         }
       });
     });
@@ -205,12 +200,6 @@
         intervalId = null;
       }
       alert('Stopped sharing');
-    };
-
-    // Toggle contours button
-    document.getElementById('toggleContours').onclick = () => {
-      const vis = map.getLayoutProperty('contours-layer', 'visibility');
-      map.setLayoutProperty('contours-layer', 'visibility', vis === 'visible' ? 'none' : 'visible');
     };
   </script>
 </body>
