@@ -77,12 +77,20 @@ map.on('load', async () => {
     const [minDN, maxDN] = [Math.min(...dnValues), Math.max(...dnValues)];
     const midDN = (minDN + maxDN) / 2;
 
-    bedrockZones.forEach((f, i) => {
-      const audio = new Audio(`/zone_sound${f.properties.DN}.mp3`);
-      audio.loop = true;
-      sounds.push(audio);
-      zoneFlags.push(false);
-    });
+    let audioContext;
+const audioBuffers = [];
+
+async function loadSound(url) {
+  const response = await fetch(url);
+  const arrayBuffer = await response.arrayBuffer();
+  return await audioContext.decodeAudioData(arrayBuffer);
+}
+
+bedrockZones.forEach(() => {
+  zoneFlags.push(false);
+  sounds.push(null); // placeholder
+});
+
 
     map.addSource('bedrock', { type: 'geojson', data: bedrock });
     map.addLayer({
@@ -186,10 +194,24 @@ map.on('load', async () => {
   }
 });
 
-document.getElementById('startBtn').addEventListener('click', () => {
+document.getElementById('startBtn').addEventListener('click', async () => {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    await Promise.all(bedrockZones.map(async (f, i) => {
+      const url = `/zone_sound${f.properties.DN}.mp3`;
+      try {
+        const buffer = await loadSound(url);
+        audioBuffers[i] = buffer;
+      } catch (err) {
+        console.error(`❌ Failed to load sound for zone ${i}:`, err);
+      }
+    }));
+  }
+
   updateMap();
   setInterval(updateMap, 3000);
 });
+
 
 document.getElementById('bedrockToggle').addEventListener('click', () => {
   toggleLayer('bedrock', 'bedrockToggle', 'Bedrock');
@@ -234,15 +256,25 @@ async function updateMap() {
       bedrockZones.forEach((feature, i) => {
         const polygon = turf.feature(feature.geometry);
         if (turf.booleanPointInPolygon(pt, polygon)) {
-          if (!zoneFlags[i]) {
-            sounds[i].play();
-            zoneFlags[i] = true;
-          }
+          if (!zoneFlags[i] && audioBuffers[i]) {
+  const source = audioContext.createBufferSource();
+  source.buffer = audioBuffers[i];
+  source.loop = true;
+  source.connect(audioContext.destination);
+  source.start(0);
+  sounds[i] = source;
+  zoneFlags[i] = true;
+}
+
         } else {
           if (zoneFlags[i]) {
-            sounds[i].pause();
-            sounds[i].currentTime = 0;
-            zoneFlags[i] = false;
+            if (sounds[i]) {
+  sounds[i].stop();
+  sounds[i].disconnect();
+  sounds[i] = null;
+}
+zoneFlags[i] = false;
+
           }
         }
       });
