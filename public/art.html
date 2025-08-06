@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Sound Grid</title>
+  <title>Bedrock Sound Zones – Diverging Gradient</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
@@ -24,7 +24,7 @@
 </head>
 <body>
   <div id="map"></div>
-  <button id="startBtn">Starty</button>
+  <button id="startBtn">Start</button>
 
   <script>
     mapboxgl.accessToken = 'pk.eyJ1IjoiZ2FieWNhcnUiLCJhIjoiY203dzI5eTRpMDExeDJqcHk0a2JjaWp4diJ9.Voohpst6Zz-ZN7MZ_M3BUw';
@@ -33,73 +33,87 @@
       container: 'map',
       style: 'mapbox://styles/gabycaru/cm8d60fxc00rg01s5hlv55yn1?optimize=true',
       center: [-71.12953, 42.34836],
-      zoom: 20
+      zoom: 16
     });
 
-    const zones = [];
-const zoneFlags = new Array(36).fill(false);
-const sounds = [];
+    let bedrockZones = [];
+    let zoneFlags = [];
+    let sounds = [];
 
-const centerLng = -71.12953 - 0.00007;
-const centerLat = 42.34836 - 0.000085;
-const spacing = 0.000015;
-const size = 0.000013;
+    map.on('load', async () => {
+      try {
+        const res = await fetch('bedrock_depth_vector.geojson');
+        const geojson = await res.json();
 
-let id = 0;
-for (let row = -2.5; row <= 2.5; row++) {
-  for (let col = -2.5; col <= 2.5; col++) {
-    const lng = centerLng + col * spacing;
-    const lat = centerLat + row * spacing;
+        console.log('✅ GeoJSON loaded with', geojson.features.length, 'features');
 
-    const polygon = turf.polygon([[
-      [lng, lat],
-      [lng + size, lat],
-      [lng + size, lat + size],
-      [lng, lat + size],
-      [lng, lat]
-    ]]);
+        bedrockZones = geojson.features;
 
-    zones.push(polygon);
-    sounds.push(new Audio(`/zone_sound${id + 1}.mp3`));
-    id++;
-  }
-}
+        // Calculate DN range
+        const dnValues = bedrockZones
+          .map(f => f.properties.DN)
+          .filter(v => typeof v === 'number');
+        const minDN = Math.min(...dnValues);
+        const maxDN = Math.max(...dnValues);
+        const midDN = (minDN + maxDN) / 2;
+        console.log('DN range:', minDN, midDN, maxDN);
 
+        // Initialize sounds and zone flags
+        bedrockZones.forEach((feature, i) => {
+          const dn = feature.properties.DN;
+          const audio = new Audio(`/zone_sound${dn}.mp3`);
+          audio.loop = true;
+          sounds.push(audio);
+          zoneFlags.push(false);
+        });
 
+        // Add zone source
+        map.addSource('bedrock', {
+          type: 'geojson',
+          data: geojson
+        });
 
-    map.on('load', () => {
-      map.addSource('live-lines', {
-        type: 'geojson',
-        data: { type: "FeatureCollection", features: [] }
-      });
+        // Add diverging fill color layer
+        map.addLayer({
+          id: 'bedrock',
+          type: 'fill',
+          source: 'bedrock',
+          paint: {
+            'fill-color': [
+              'interpolate',
+              ['linear'],
+              ['get', 'DN'],
+              minDN, '#FF0000',     // low = red
+              midDN, '#FFFFFF',     // mid = white
+              maxDN, '#0000FF'      // high = blue
+            ],
+            'fill-opacity': 0.6,
+          }
+        });
 
-      map.addLayer({
-        id: 'live-lines',
-        type: 'line',
-        source: 'live-lines',
-        paint: {
-          'line-color': '#FF0000',
-          'line-width': 4
-        }
-      });
+        // Zoom to shapefile bounds
+        const bbox = turf.bbox(geojson);
+        map.fitBounds(bbox, { padding: 20 });
 
-      map.addSource('zones', {
-        type: 'geojson',
-        data: {
-          type: "FeatureCollection",
-          features: zones.map(z => ({ type: "Feature", geometry: z.geometry }))
-        }
-      });
+        // Add user trace line source
+        map.addSource('live-lines', {
+          type: 'geojson',
+          data: { type: "FeatureCollection", features: [] }
+        });
 
-      map.addLayer({
-        id: 'zones',
-        type: 'line',
-        source: 'zones',
-        paint: {
-          'line-color': '#00FFFF',
-          'line-width': 2
-        }
-      });
+        map.addLayer({
+          id: 'live-lines',
+          type: 'line',
+          source: 'live-lines',
+          paint: {
+            'line-color': '#FF0000',
+            'line-width': 4
+          }
+        });
+
+      } catch (err) {
+        console.error('❌ Failed to load GeoJSON:', err);
+      }
     });
 
     document.getElementById('startBtn').addEventListener('click', () => {
@@ -131,26 +145,25 @@ for (let row = -2.5; row <= 2.5; row++) {
           ) {
             const pt = turf.point(lastCoord);
 
-            zones.forEach((zone, i) => {
-  if (turf.booleanPointInPolygon(pt, zone)) {
-    if (!zoneFlags[i]) {
-      sounds[i].loop = true;
-      sounds[i].play();
-      zoneFlags[i] = true;
-    }
-  } else {
-    if (zoneFlags[i]) {
-      sounds[i].pause();
-      sounds[i].currentTime = 0;
-      zoneFlags[i] = false;
-    }
-  }
-});
-
+            bedrockZones.forEach((feature, i) => {
+              const polygon = turf.feature(feature.geometry);
+              if (turf.booleanPointInPolygon(pt, polygon)) {
+                if (!zoneFlags[i]) {
+                  sounds[i].play();
+                  zoneFlags[i] = true;
+                }
+              } else {
+                if (zoneFlags[i]) {
+                  sounds[i].pause();
+                  sounds[i].currentTime = 0;
+                  zoneFlags[i] = false;
+                }
+              }
+            });
           }
         }
       } catch (err) {
-        console.error('Failed to fetch geo or check zones', err);
+        console.error('❌ Failed to fetch or check zones:', err);
       }
     }
   </script>
