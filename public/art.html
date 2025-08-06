@@ -9,7 +9,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
     body { margin: 0; padding: 0; }
-    #map { position: absolute; top: 0; bottom: 0; width: 100%;filter: invert(1) hue-rotate(180deg); }
+    #map { position: absolute; top: 0; bottom: 0; width: 100%; filter: invert(1) hue-rotate(180deg); }
 
     #startBtn {
       position: absolute;
@@ -21,11 +21,29 @@
       z-index: 999;
       cursor: pointer;
     }
+
+    .layerToggle {
+      position: absolute;
+      top: 20px;
+      padding: 10px 20px;
+      background: white;
+      border: 1px solid #ccc;
+      z-index: 999;
+      cursor: pointer;
+      margin-left: 10px;
+    }
+
+    #bedrockToggle { left: 120px; }
+    #v2Toggle { left: 250px; }
+    #v3Toggle { left: 380px; }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <button id="startBtn">Start</button>
+  <button id="bedrockToggle" class="layerToggle">Bedrock: ON</button>
+  <button id="v2Toggle" class="layerToggle">V2: ON</button>
+  <button id="v3Toggle" class="layerToggle">V3: ON</button>
 
   <script>
     mapboxgl.accessToken = 'pk.eyJ1IjoibGFtZW91Y2hpIiwiYSI6ImNsa3ZqdHZtMDBjbTQzcXBpNzRyc2ljNGsifQ.287002jl7xT9SBub-dbBbQ';
@@ -43,23 +61,14 @@
 
     map.on('load', async () => {
       try {
-        const res = await fetch('bedrock_depth_vector.geojson');
-        const geojson = await res.json();
+        // --- Load Bedrock
+        const bedrockRes = await fetch('bedrock_depth_vector.geojson');
+        const bedrockGeo = await bedrockRes.json();
+        bedrockZones = bedrockGeo.features;
 
-        console.log('✅ GeoJSON loaded with', geojson.features.length, 'features');
+        const bedrockDN = bedrockZones.map(f => f.properties.DN).filter(v => typeof v === 'number');
+        const minDN = Math.min(...bedrockDN), maxDN = Math.max(...bedrockDN), midDN = (minDN + maxDN) / 2;
 
-        bedrockZones = geojson.features;
-
-        // Calculate DN range
-        const dnValues = bedrockZones
-          .map(f => f.properties.DN)
-          .filter(v => typeof v === 'number');
-        const minDN = Math.min(...dnValues);
-        const maxDN = Math.max(...dnValues);
-        const midDN = (minDN + maxDN) / 2;
-        console.log('DN range:', minDN, midDN, maxDN);
-
-        // Initialize sounds and zone flags
         bedrockZones.forEach((feature, i) => {
           const dn = feature.properties.DN;
           const audio = new Audio(`/zone_sound${dn}.mp3`);
@@ -68,55 +77,83 @@
           zoneFlags.push(false);
         });
 
-        // Add zone source
-        map.addSource('bedrock', {
-          type: 'geojson',
-          data: geojson
-        });
-
-        // Add diverging fill color layer
+        map.addSource('bedrock', { type: 'geojson', data: bedrockGeo });
         map.addLayer({
           id: 'bedrock',
           type: 'fill',
           source: 'bedrock',
           paint: {
             'fill-color': [
-              'interpolate',
-              ['linear'],
-              ['get', 'DN'],
-              minDN, '#FF0000',     // low = red
-              midDN, '#FFFFFF',     // mid = white
-              maxDN, '#0000FF'      // high = blue
+              'interpolate', ['linear'], ['get', 'DN'],
+              minDN, '#FF0000', midDN, '#FFFFFF', maxDN, '#0000FF'
             ],
             'fill-opacity': 0.6,
+            'fill-outline-color': '#000000'
           }
         });
 
-        // Zoom to shapefile bounds
-        const bbox = turf.bbox(geojson);
-        map.fitBounds(bbox, { padding: 20 });
+        map.fitBounds(turf.bbox(bedrockGeo), { padding: 20 });
 
-        // Add user trace line source
+        // --- Live Trace Layer
         map.addSource('live-lines', {
           type: 'geojson',
           data: { type: "FeatureCollection", features: [] }
         });
-
         map.addLayer({
           id: 'live-lines',
           type: 'line',
           source: 'live-lines',
+          paint: { 'line-color': '#FF0000', 'line-width': 4 }
+        });
+
+        // --- Load V2 (with dummy gradient)
+        const v2res = await fetch('v2.geojson');
+        const v2geo = await v2res.json();
+        const v2DNs = v2geo.features.map(f => f.properties.DN).filter(v => typeof v === 'number');
+        const minV2 = Math.min(...v2DNs), maxV2 = Math.max(...v2DNs), midV2 = (minV2 + maxV2) / 2;
+
+        map.addSource('v2layer', { type: 'geojson', data: v2geo });
+        map.addLayer({
+          id: 'v2layer',
+          type: 'fill',
+          source: 'v2layer',
           paint: {
-            'line-color': '#FF0000',
-            'line-width': 4
+            'fill-color': [
+              'interpolate', ['linear'], ['get', 'DN'],
+              minV2, '#00FF88', midV2, '#FFFFFF', maxV2, '#004466'
+            ],
+            'fill-opacity': 0.4,
+            'fill-outline-color': '#000000'
+          }
+        });
+
+        // --- Load V3 (this one has DN field)
+        const v3res = await fetch('v3.geojson');
+        const v3geo = await v3res.json();
+        const v3DNs = v3geo.features.map(f => f.properties.DN).filter(v => typeof v === 'number');
+        const minV3 = Math.min(...v3DNs), maxV3 = Math.max(...v3DNs), midV3 = (minV3 + maxV3) / 2;
+
+        map.addSource('v3layer', { type: 'geojson', data: v3geo });
+        map.addLayer({
+          id: 'v3layer',
+          type: 'fill',
+          source: 'v3layer',
+          paint: {
+            'fill-color': [
+              'interpolate', ['linear'], ['get', 'DN'],
+              minV3, '#FFA500', midV3, '#FFFF00', maxV3, '#008000'
+            ],
+            'fill-opacity': 0.5,
+            'fill-outline-color': '#333333'
           }
         });
 
       } catch (err) {
-        console.error('❌ Failed to load GeoJSON:', err);
+        console.error('❌ Error loading one of the layers:', err);
       }
     });
 
+    // 🔁 Update live trace + sound playback
     document.getElementById('startBtn').addEventListener('click', () => {
       updateMap();
       setInterval(updateMap, 3000);
@@ -130,43 +167,42 @@
 
         const features = data.features;
         const lastFeature = features[features.length - 1];
-
-        if (
-          lastFeature &&
-          lastFeature.geometry &&
-          Array.isArray(lastFeature.geometry.coordinates)
-        ) {
-          const line = lastFeature.geometry.coordinates;
-          const lastCoord = line[line.length - 1];
-
-          if (
-            Array.isArray(lastCoord) &&
-            typeof lastCoord[0] === 'number' &&
-            typeof lastCoord[1] === 'number'
-          ) {
-            const pt = turf.point(lastCoord);
-
-            bedrockZones.forEach((feature, i) => {
-              const polygon = turf.feature(feature.geometry);
-              if (turf.booleanPointInPolygon(pt, polygon)) {
-                if (!zoneFlags[i]) {
-                  sounds[i].play();
-                  zoneFlags[i] = true;
-                }
-              } else {
-                if (zoneFlags[i]) {
-                  sounds[i].pause();
-                  sounds[i].currentTime = 0;
-                  zoneFlags[i] = false;
-                }
-              }
-            });
-          }
+        if (lastFeature?.geometry?.coordinates) {
+          const lastCoord = lastFeature.geometry.coordinates.at(-1);
+          const pt = turf.point(lastCoord);
+          bedrockZones.forEach((feature, i) => {
+            const polygon = turf.feature(feature.geometry);
+            const inside = turf.booleanPointInPolygon(pt, polygon);
+            if (inside && !zoneFlags[i]) {
+              sounds[i].play();
+              zoneFlags[i] = true;
+            } else if (!inside && zoneFlags[i]) {
+              sounds[i].pause();
+              sounds[i].currentTime = 0;
+              zoneFlags[i] = false;
+            }
+          });
         }
       } catch (err) {
-        console.error('❌ Failed to fetch or check zones:', err);
+        console.error('❌ Failed to update live data:', err);
       }
     }
+
+    // 👁 Layer Toggle Logic
+    const toggles = [
+      { id: 'bedrock', btn: 'bedrockToggle' },
+      { id: 'v2layer', btn: 'v2Toggle' },
+      { id: 'v3layer', btn: 'v3Toggle' },
+    ];
+
+    toggles.forEach(({ id, btn }) => {
+      document.getElementById(btn).addEventListener('click', () => {
+        const vis = map.getLayoutProperty(id, 'visibility') ?? 'visible';
+        const newVis = vis === 'visible' ? 'none' : 'visible';
+        map.setLayoutProperty(id, 'visibility', newVis);
+        document.getElementById(btn).textContent = `${btn.replace('Toggle', '')}: ${newVis === 'visible' ? 'ON' : 'OFF'}`;
+      });
+    });
   </script>
 </body>
 </html>
