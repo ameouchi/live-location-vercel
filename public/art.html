@@ -28,7 +28,6 @@
     .layerToggle, #startBtn {
       position: absolute;
       top: 20px;
-      left: 240px;
       padding: 6px 12px;
       background: white;
       border: 1px solid #ccc;
@@ -36,9 +35,10 @@
       cursor: pointer;
       margin-right: 8px;
     }
-    #bedrockToggle { left: 320px; }
-    #v2Toggle { left: 420px; }
-    #v3Toggle { left: 520px; }
+    #startBtn { left: 240px; }
+    #bedrockToggle { left: 340px; }
+    #v2Toggle { left: 440px; }
+    #v3Toggle { left: 540px; }
   </style>
 </head>
 <body>
@@ -68,6 +68,15 @@ let bedrockZones = [];
 let zoneFlags = [];
 let sounds = [];
 
+let audioContext;
+const audioBuffers = [];
+
+async function loadSound(url) {
+  const response = await fetch(url);
+  const arrayBuffer = await response.arrayBuffer();
+  return await audioContext.decodeAudioData(arrayBuffer);
+}
+
 map.on('load', async () => {
   try {
     const bedrock = await fetch('bedrock_depth_vector.geojson').then(res => res.json());
@@ -77,20 +86,8 @@ map.on('load', async () => {
     const [minDN, maxDN] = [Math.min(...dnValues), Math.max(...dnValues)];
     const midDN = (minDN + maxDN) / 2;
 
-    let audioContext;
-const audioBuffers = [];
-
-async function loadSound(url) {
-  const response = await fetch(url);
-  const arrayBuffer = await response.arrayBuffer();
-  return await audioContext.decodeAudioData(arrayBuffer);
-}
-
-bedrockZones.forEach(() => {
-  zoneFlags.push(false);
-  sounds.push(null); // placeholder
-});
-
+    zoneFlags = new Array(bedrockZones.length).fill(false);
+    sounds = new Array(bedrockZones.length).fill(null);
 
     map.addSource('bedrock', { type: 'geojson', data: bedrock });
     map.addLayer({
@@ -104,22 +101,17 @@ bedrockZones.forEach(() => {
       }
     });
 
-    // Add bedrock labels
     const bedrockLabels = {
       type: "FeatureCollection",
       features: bedrockZones.map((feature) => {
         const center = turf.centroid(feature);
         const dn = feature.properties.DN;
-        center.properties.label = `DN: ${dn}\n\uD83C\uDFB5 zone_sound${dn}.mp3`;
+        center.properties.label = `DN: ${dn}\n🎵 zone_sound${dn}.mp3`;
         return center;
       })
     };
 
-    map.addSource('bedrock-labels', {
-      type: 'geojson',
-      data: bedrockLabels
-    });
-
+    map.addSource('bedrock-labels', { type: 'geojson', data: bedrockLabels });
     map.addLayer({
       id: 'bedrock-labels',
       type: 'symbol',
@@ -140,11 +132,11 @@ bedrockZones.forEach(() => {
 
     map.fitBounds(turf.bbox(bedrock), { padding: 20 });
 
+    // Live line source
     map.addSource('live-lines', {
       type: 'geojson',
       data: { type: "FeatureCollection", features: [] }
     });
-
     map.addLayer({
       id: 'live-lines',
       type: 'line',
@@ -155,6 +147,7 @@ bedrockZones.forEach(() => {
       }
     });
 
+    // V2
     const v2 = await fetch('v2.geojson').then(res => res.json());
     const v2DNs = v2.features.map(f => f.properties.DN).filter(v => typeof v === 'number');
     const [min2, max2] = [Math.min(...v2DNs), Math.max(...v2DNs)];
@@ -172,6 +165,7 @@ bedrockZones.forEach(() => {
       }
     });
 
+    // V3
     const v3 = await fetch('v3.geojson').then(res => res.json());
     const v3DNs = v3.features.map(f => f.properties.DN).filter(v => typeof v === 'number');
     const [min3, max3] = [Math.min(...v3DNs), Math.max(...v3DNs)];
@@ -203,7 +197,8 @@ document.getElementById('startBtn').addEventListener('click', async () => {
         const buffer = await loadSound(url);
         audioBuffers[i] = buffer;
       } catch (err) {
-        console.error(`❌ Failed to load sound for zone ${i}:`, err);
+        console.warn(`⚠️ Missing or failed to load sound for zone ${f.properties.DN}`);
+        audioBuffers[i] = null;
       }
     }));
   }
@@ -212,26 +207,20 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   setInterval(updateMap, 3000);
 });
 
-
-document.getElementById('bedrockToggle').addEventListener('click', () => {
-  toggleLayer('bedrock', 'bedrockToggle', 'Bedrock');
-});
-document.getElementById('v2Toggle').addEventListener('click', () => {
-  toggleLayer('v2layer', 'v2Toggle', 'V2');
-});
-document.getElementById('v3Toggle').addEventListener('click', () => {
-  toggleLayer('v3layer', 'v3Toggle', 'V3');
-});
-
 function toggleLayer(id, btnId, label) {
   const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
   const newVis = vis === 'visible' ? 'none' : 'visible';
   map.setLayoutProperty(id, 'visibility', newVis);
-  if (map.getLayer(`${id}-labels`)) {
+  const labelLayer = map.getLayer(`${id}-labels`);
+  if (labelLayer) {
     map.setLayoutProperty(`${id}-labels`, 'visibility', newVis);
   }
   document.getElementById(btnId).textContent = `${label}: ${newVis === 'visible' ? 'ON' : 'OFF'}`;
 }
+
+document.getElementById('bedrockToggle').addEventListener('click', () => toggleLayer('bedrock', 'bedrockToggle', 'Bedrock'));
+document.getElementById('v2Toggle').addEventListener('click', () => toggleLayer('v2layer', 'v2Toggle', 'V2'));
+document.getElementById('v3Toggle').addEventListener('click', () => toggleLayer('v3layer', 'v3Toggle', 'V3'));
 
 async function updateMap() {
   try {
@@ -257,24 +246,22 @@ async function updateMap() {
         const polygon = turf.feature(feature.geometry);
         if (turf.booleanPointInPolygon(pt, polygon)) {
           if (!zoneFlags[i] && audioBuffers[i]) {
-  const source = audioContext.createBufferSource();
-  source.buffer = audioBuffers[i];
-  source.loop = true;
-  source.connect(audioContext.destination);
-  source.start(0);
-  sounds[i] = source;
-  zoneFlags[i] = true;
-}
-
+            const source = audioContext.createBufferSource();
+            source.buffer = audioBuffers[i];
+            source.loop = true;
+            source.connect(audioContext.destination);
+            source.start(0);
+            sounds[i] = source;
+            zoneFlags[i] = true;
+          }
         } else {
           if (zoneFlags[i]) {
             if (sounds[i]) {
-  sounds[i].stop();
-  sounds[i].disconnect();
-  sounds[i] = null;
-}
-zoneFlags[i] = false;
-
+              sounds[i].stop();
+              sounds[i].disconnect();
+              sounds[i] = null;
+            }
+            zoneFlags[i] = false;
           }
         }
       });
