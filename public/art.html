@@ -89,7 +89,7 @@ map.on('load', async () => {
   const dns = bedrockZones.map(f => f.properties.DN).filter(Number.isFinite);
   const [min, max] = [Math.min(...dns), Math.max(...dns)];
   const mid = (min + max) / 2;
-  audioBuffers = await Promise.all(bedrockZones.map(f => loadSound(`/zone_sound${f.properties.DN}.mp3`)));
+  audioBuffers = new Array(bedrockZones.length).fill(null);
   zoneFlags = new Array(bedrockZones.length).fill(false);
   sources = new Array(bedrockZones.length).fill(null);
 
@@ -101,6 +101,36 @@ map.on('load', async () => {
     paint: {
       'fill-color': ['interpolate', ['linear'], ['get', 'DN'], min, '#FF0000', mid, '#FFFFFF', max, '#0000FF'],
       'fill-opacity': 0.6, 'fill-outline-color': '#000'
+    }
+  });
+
+  // Add labels for bedrock zones
+  const bedrockLabels = {
+    type: "FeatureCollection",
+    features: bedrockZones.map((feature) => {
+      const center = turf.centroid(feature);
+      const dn = feature.properties.DN;
+      center.properties.label = `DN: ${dn}\n🎵 zone_sound${dn}.mp3`;
+      return center;
+    })
+  };
+
+  map.addSource('bedrock-labels', { type: 'geojson', data: bedrockLabels });
+  map.addLayer({
+    id: 'bedrock-labels',
+    type: 'symbol',
+    source: 'bedrock-labels',
+    layout: {
+      'text-field': ['get', 'label'],
+      'text-size': 11,
+      'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+      'text-justify': 'center',
+      'text-anchor': 'center'
+    },
+    paint: {
+      'text-color': '#111',
+      'text-halo-color': '#fff',
+      'text-halo-width': 1
     }
   });
 
@@ -191,6 +221,13 @@ function toggleLayer(id, btnId, label) {
   const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
   const newVis = vis === 'visible' ? 'none' : 'visible';
   map.setLayoutProperty(id, 'visibility', newVis);
+  
+  // Also toggle labels if they exist
+  const labelLayer = map.getLayer(`${id}-labels`);
+  if (labelLayer) {
+    map.setLayoutProperty(`${id}-labels`, 'visibility', newVis);
+  }
+  
   document.getElementById(btnId).textContent = `${label}: ${newVis === 'visible' ? 'ON' : 'OFF'}`;
 }
 document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 'bedrockToggle', 'Bedrock');
@@ -209,22 +246,33 @@ function stopAllSounds() {
   });
 }
 
-function updateSimulation() {
+async function updateSimulation() {
   if (!drawnCoords.length) return;
   const pt = turf.point(drawnCoords[drawnCoords.length - 1]);
 
-  bedrockZones.forEach((feature, i) => {
+  for (let i = 0; i < bedrockZones.length; i++) {
+    const feature = bedrockZones[i];
     const polygon = turf.polygon(feature.geometry.coordinates);
     const isInside = turf.booleanPointInPolygon(pt, polygon);
 
-    if (isInside && !zoneFlags[i] && audioBuffers[i]) {
-      const src = audioCtx.createBufferSource();
-      src.buffer = audioBuffers[i];
-      src.loop = true;
-      src.connect(audioCtx.destination);
-      src.start();
-      sources[i] = src;
-      zoneFlags[i] = true;
+    if (isInside && !zoneFlags[i]) {
+      if (!audioBuffers[i]) {
+        const dn = feature.properties.DN;
+        const soundPath = `/zone_sound${dn}.mp3`;
+        let buffer = await loadSound(soundPath);
+
+        audioBuffers[i] = buffer;
+      }
+
+      if (audioBuffers[i]) {
+        const src = audioCtx.createBufferSource();
+        src.buffer = audioBuffers[i];
+        src.loop = true;
+        src.connect(audioCtx.destination);
+        src.start();
+        sources[i] = src;
+        zoneFlags[i] = true;
+      }
     } else if (!isInside && zoneFlags[i]) {
       if (sources[i]) {
         sources[i].stop();
@@ -233,7 +281,7 @@ function updateSimulation() {
       }
       zoneFlags[i] = false;
     }
-  });
+  }
 }
 </script>
 </body>
