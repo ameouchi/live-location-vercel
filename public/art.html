@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Map – Shared Locations + Zones + Simulator</title>
+  <title>Map – Shared Locations + Layers + Simulation</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.js"></script>
@@ -9,38 +9,24 @@
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
     body { margin: 0; padding: 0; font-family: sans-serif; }
-    #map { position: absolute; top: 0; bottom: 0; left: 250px; right: 0; filter: invert(1) hue-rotate(180deg); }
+    #map { position: absolute; top: 0; bottom: 0; left: 220px; right: 0; filter: invert(1) hue-rotate(180deg); }
     #sidebar {
-      position: absolute;
-      top: 0;
-      left: 0;
-      bottom: 0;
-      width: 250px;
-      background: rgba(255,255,255,0.95);
-      padding: 10px;
-      overflow-y: auto;
-      z-index: 998;
-      border-right: 1px solid #ccc;
+      position: absolute; top: 0; left: 0; bottom: 0; width: 220px;
+      background: rgba(255,255,255,0.95); padding: 10px; overflow-y: auto;
+      z-index: 998; border-right: 1px solid #ccc;
     }
     #sidebar h3 { margin-top: 0; font-size: 16px; }
+    #peopleList { list-style: none; padding: 0; margin: 0; }
     #peopleList li { padding: 4px 0; font-size: 14px; border-bottom: 1px solid #eee; }
-
-    #controls {
-      position: absolute;
-      top: 20px;
-      left: 260px;
-      z-index: 999;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
+    .layerToggle, #startBtn, #stopBtn {
+      position: absolute; top: 20px; padding: 6px 12px;
+      background: white; border: 1px solid #ccc; z-index: 999; cursor: pointer;
     }
-
-    button {
-      padding: 6px 12px;
-      background: white;
-      border: 1px solid #ccc;
-      cursor: pointer;
-    }
+    #startBtn { left: 240px; }
+    #stopBtn { left: 340px; }
+    #bedrockToggle { left: 440px; }
+    #v2Toggle { left: 540px; }
+    #v3Toggle { left: 640px; }
   </style>
 </head>
 <body>
@@ -50,48 +36,68 @@
   <ul id="peopleList"></ul>
 </div>
 
-<div id="controls">
-  <button id="startBtn">Start Audio</button>
-  <button id="stopBtn">Stop Audio</button>
-  <button id="drawBtn">Start Drawing</button>
-  <button id="clearBtn">Clear</button>
-</div>
-
 <div id="map"></div>
+<button id="startBtn">Start</button>
+<button id="stopBtn">Stop</button>
+<button id="bedrockToggle" class="layerToggle">Bedrock: ON</button>
+<button id="v2Toggle" class="layerToggle">V2: ON</button>
+<button id="v3Toggle" class="layerToggle">V3: ON</button>
 
 <script>
 mapboxgl.accessToken = 'pk.eyJ1IjoibGFtZW91Y2hpIiwiYSI6ImNsa3ZqdHZtMDBjbTQzcXBpNzRyc2ljNGsifQ.287002jl7xT9SBub-dbBbQ';
 
 const map = new mapboxgl.Map({
   container: 'map',
-  style: 'mapbox://styles/mapbox/light-v11',
+  style: 'mapbox://styles/lameouchi/cme04okvl00be01rydkfj6r43',
   center: [-71.12953, 42.34836],
   zoom: 16
 });
 
-let bedrockZones = [];
-let audioContext;
-let audioBuffers = [];
-let audioSources = [];
-let zoneFlags = [];
+let drawCoords = [];
+let intervalId = null;
+let bedrockZones = [], zoneFlags = [], sounds = [], audioContext, audioBuffers = [];
 
-let simulatedLine = {
-  type: 'Feature',
-  geometry: { type: 'LineString', coordinates: [] },
-  properties: { name: 'Simulator' }
-};
+function toggleLayer(id, btnId, label) {
+  const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
+  const newVis = vis === 'visible' ? 'none' : 'visible';
+  map.setLayoutProperty(id, 'visibility', newVis);
+  const labelLayer = map.getLayer(`${id}-labels`);
+  if (labelLayer) map.setLayoutProperty(`${id}-labels`, 'visibility', newVis);
+  document.getElementById(btnId).textContent = `${label}: ${newVis === 'visible' ? 'ON' : 'OFF'}`;
+}
+
+async function loadSound(url) {
+  const response = await fetch(url);
+  const arrayBuffer = await response.arrayBuffer();
+  return await audioContext.decodeAudioData(arrayBuffer);
+}
+
+async function loadGeojsonLayer(id, url, colors) {
+  const data = await fetch(url).then(res => res.json());
+  const values = data.features.map(f => f.properties.DN).filter(v => typeof v === 'number');
+  const [min, max] = [Math.min(...values), Math.max(...values)];
+  const mid = (min + max) / 2;
+  map.addSource(id, { type: 'geojson', data });
+  map.addLayer({
+    id,
+    type: 'fill',
+    source: id,
+    paint: {
+      'fill-color': ['interpolate', ['linear'], ['get', 'DN'], min, colors[0], mid, colors[1], max, colors[2]],
+      'fill-opacity': 0.5,
+      'fill-outline-color': '#000'
+    }
+  });
+}
 
 map.on('load', async () => {
-  // Load Bedrock
   const bedrock = await fetch('bedrock_depth_vector.geojson').then(res => res.json());
   bedrockZones = bedrock.features;
-
-  const dnValues = bedrockZones.map(f => f.properties.DN).filter(v => typeof v === 'number');
-  const [min, max] = [Math.min(...dnValues), Math.max(...dnValues)];
+  const bedrockValues = bedrockZones.map(f => f.properties.DN);
+  const [min, max] = [Math.min(...bedrockValues), Math.max(...bedrockValues)];
   const mid = (min + max) / 2;
-
   zoneFlags = new Array(bedrockZones.length).fill(false);
-  audioSources = new Array(bedrockZones.length).fill(null);
+  sounds = new Array(bedrockZones.length).fill(null);
 
   map.addSource('bedrock', { type: 'geojson', data: bedrock });
   map.addLayer({
@@ -100,141 +106,77 @@ map.on('load', async () => {
     source: 'bedrock',
     paint: {
       'fill-color': ['interpolate', ['linear'], ['get', 'DN'], min, '#FF0000', mid, '#FFFFFF', max, '#0000FF'],
-      'fill-opacity': 0.5,
-      'fill-outline-color': '#000000'
+      'fill-opacity': 0.6,
+      'fill-outline-color': '#000'
     }
   });
 
-  // Load V2
-  const v2 = await fetch('v2.geojson').then(res => res.json());
-  const v2DNs = v2.features.map(f => f.properties.DN).filter(v => typeof v === 'number');
-  const [min2, max2] = [Math.min(...v2DNs), Math.max(...v2DNs)];
-  const mid2 = (min2 + max2) / 2;
+  await loadGeojsonLayer('v2layer', 'v2.geojson', ['#008000', '#FFFF00', '#8B4513']);
+  await loadGeojsonLayer('v3layer', 'v3.geojson', ['#800080', '#FFC0CB', '#00FFFF']);
 
-  map.addSource('v2', { type: 'geojson', data: v2 });
-  map.addLayer({
-    id: 'v2',
-    type: 'fill',
-    source: 'v2',
-    paint: {
-      'fill-color': ['interpolate', ['linear'], ['get', 'DN'], min2, '#00FF00', mid2, '#FFFF00', max2, '#8B4513'],
-      'fill-opacity': 0.4,
-      'fill-outline-color': '#000000'
-    }
+  map.addSource('live-lines', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  map.addLayer({ id: 'live-lines', type: 'line', source: 'live-lines', paint: { 'line-color': '#FF0000', 'line-width': 4 } });
+
+  map.on('click', (e) => {
+    drawCoords.push(e.lngLat.toArray());
+    const feature = {
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: drawCoords },
+      properties: { name: 'SimUser' }
+    };
+    map.getSource('live-lines').setData({ type: 'FeatureCollection', features: [feature] });
   });
-
-  // Load V3
-  const v3 = await fetch('v3.geojson').then(res => res.json());
-  const v3DNs = v3.features.map(f => f.properties.DN).filter(v => typeof v === 'number');
-  const [min3, max3] = [Math.min(...v3DNs), Math.max(...v3DNs)];
-  const mid3 = (min3 + max3) / 2;
-
-  map.addSource('v3', { type: 'geojson', data: v3 });
-  map.addLayer({
-    id: 'v3',
-    type: 'fill',
-    source: 'v3',
-    paint: {
-      'fill-color': ['interpolate', ['linear'], ['get', 'DN'], min3, '#800080', mid3, '#FFC0CB', max3, '#00FFFF'],
-      'fill-opacity': 0.4,
-      'fill-outline-color': '#000000'
-    }
-  });
-
-  // Add simulation line
-  map.addSource('sim-line', {
-    type: 'geojson',
-    data: { type: 'FeatureCollection', features: [simulatedLine] }
-  });
-  map.addLayer({
-    id: 'sim-line',
-    type: 'line',
-    source: 'sim-line',
-    paint: {
-      'line-color': '#FF00FF',
-      'line-width': 4
-    }
-  });
-
-  map.fitBounds(turf.bbox(bedrock), { padding: 20 });
 });
 
-document.getElementById('startBtn').addEventListener('click', async () => {
-  if (!audioContext) {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  await audioContext.resume();
-
-  for (let i = 0; i < bedrockZones.length; i++) {
-    const dn = bedrockZones[i].properties.DN;
-    try {
-      const response = await fetch(`/zone_sound${dn}.mp3`);
-      const arrayBuffer = await response.arrayBuffer();
-      audioBuffers[i] = await audioContext.decodeAudioData(arrayBuffer);
-    } catch {
-      console.warn(`⚠️ Failed to load zone_sound${dn}.mp3`);
-      audioBuffers[i] = null;
-    }
-  }
-  console.log('✅ Sounds loaded');
-});
-
-document.getElementById('stopBtn').addEventListener('click', () => {
-  for (let i = 0; i < audioSources.length; i++) {
-    if (audioSources[i]) {
-      audioSources[i].stop();
-      audioSources[i].disconnect();
-      audioSources[i] = null;
-      zoneFlags[i] = false;
-    }
-  }
-  console.log('🔇 All sounds stopped');
-});
-
-let drawing = false;
-document.getElementById('drawBtn').addEventListener('click', () => {
-  drawing = !drawing;
-  document.getElementById('drawBtn').textContent = drawing ? 'Drawing: ON' : 'Start Drawing';
-});
-
-document.getElementById('clearBtn').addEventListener('click', () => {
-  simulatedLine.geometry.coordinates = [];
-  map.getSource('sim-line').setData({ type: 'FeatureCollection', features: [simulatedLine] });
-});
-
-map.on('click', (e) => {
-  if (!drawing) return;
-  simulatedLine.geometry.coordinates.push([e.lngLat.lng, e.lngLat.lat]);
-  map.getSource('sim-line').setData({ type: 'FeatureCollection', features: [simulatedLine] });
-  checkZones(e.lngLat.lng, e.lngLat.lat);
-});
-
-function checkZones(lng, lat) {
-  if (!audioContext) return;
-  const pt = turf.point([lng, lat]);
-  bedrockZones.forEach((feature, i) => {
-    const polygon = turf.feature(feature.geometry);
-    const inside = turf.booleanPointInPolygon(pt, polygon);
-
+async function updateMap() {
+  const data = map.getSource('live-lines')._data;
+  if (!data || data.features.length === 0) return;
+  const pt = turf.point(drawCoords[drawCoords.length - 1]);
+  document.getElementById('peopleList').innerHTML = `<li>SimUser</li>`;
+  bedrockZones.forEach((zone, i) => {
+    const inside = turf.booleanPointInPolygon(pt, zone);
     if (inside && !zoneFlags[i] && audioBuffers[i]) {
       const source = audioContext.createBufferSource();
       source.buffer = audioBuffers[i];
       source.loop = true;
       source.connect(audioContext.destination);
-      source.start();
-      audioSources[i] = source;
+      source.start(0);
+      sounds[i] = source;
       zoneFlags[i] = true;
     } else if (!inside && zoneFlags[i]) {
-      if (audioSources[i]) {
-        audioSources[i].stop();
-        audioSources[i].disconnect();
-        audioSources[i] = null;
-      }
+      sounds[i]?.stop();
+      sounds[i] = null;
       zoneFlags[i] = false;
     }
   });
 }
-</script>
 
+document.getElementById('startBtn').onclick = async () => {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    await Promise.all(bedrockZones.map(async (f, i) => {
+      try {
+        const url = `/zone_sound${f.properties.DN}.mp3`;
+        audioBuffers[i] = await loadSound(url);
+      } catch {
+        audioBuffers[i] = null;
+      }
+    }));
+  }
+  intervalId = setInterval(updateMap, 3000);
+};
+
+document.getElementById('stopBtn').onclick = () => {
+  clearInterval(intervalId);
+  intervalId = null;
+  zoneFlags = zoneFlags.map(() => false);
+  sounds.forEach(s => s?.stop());
+  sounds = [];
+};
+
+document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 'bedrockToggle', 'Bedrock');
+document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
+document.getElementById('v3Toggle').onclick = () => toggleLayer('v3layer', 'v3Toggle', 'V3');
+</script>
 </body>
 </html>
