@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Map – Shared Locations + Layers + Simulation</title>
+  <title>Map – Shared Locations + Layers</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.js"></script>
@@ -18,15 +18,16 @@
     #sidebar h3 { margin-top: 0; font-size: 16px; }
     #peopleList { list-style: none; padding: 0; margin: 0; }
     #peopleList li { padding: 4px 0; font-size: 14px; border-bottom: 1px solid #eee; }
-    .layerToggle, #startBtn, #stopBtn {
+    .layerToggle, .controlBtn {
       position: absolute; top: 20px; padding: 6px 12px;
       background: white; border: 1px solid #ccc; z-index: 999; cursor: pointer;
     }
     #startBtn { left: 240px; }
     #stopBtn { left: 340px; }
-    #bedrockToggle { left: 440px; }
-    #v2Toggle { left: 540px; }
-    #v3Toggle { left: 640px; }
+    #drawToggle { left: 440px; }
+    #bedrockToggle { left: 560px; }
+    #v2Toggle { left: 660px; }
+    #v3Toggle { left: 760px; }
   </style>
 </head>
 <body>
@@ -37,8 +38,9 @@
 </div>
 
 <div id="map"></div>
-<button id="startBtn">Start</button>
-<button id="stopBtn">Stop</button>
+<button id="startBtn" class="controlBtn">Start</button>
+<button id="stopBtn" class="controlBtn">Stop</button>
+<button id="drawToggle" class="controlBtn">Draw: OFF</button>
 <button id="bedrockToggle" class="layerToggle">Bedrock: ON</button>
 <button id="v2Toggle" class="layerToggle">V2: ON</button>
 <button id="v3Toggle" class="layerToggle">V3: ON</button>
@@ -53,9 +55,8 @@ const map = new mapboxgl.Map({
   zoom: 16
 });
 
-let drawCoords = [];
-let intervalId = null;
-let bedrockZones = [], zoneFlags = [], sounds = [], audioContext, audioBuffers = [];
+let bedrockZones = [], zoneFlags = [], sounds = [], audioBuffers = [], drawCoords = [];
+let audioContext, drawMode = false, intervalId = null;
 
 function toggleLayer(id, btnId, label) {
   const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
@@ -91,10 +92,11 @@ async function loadGeojsonLayer(id, url, colors) {
 }
 
 map.on('load', async () => {
+  // Load Bedrock
   const bedrock = await fetch('bedrock_depth_vector.geojson').then(res => res.json());
   bedrockZones = bedrock.features;
-  const bedrockValues = bedrockZones.map(f => f.properties.DN);
-  const [min, max] = [Math.min(...bedrockValues), Math.max(...bedrockValues)];
+  const values = bedrockZones.map(f => f.properties.DN);
+  const [min, max] = [Math.min(...values), Math.max(...values)];
   const mid = (min + max) / 2;
   zoneFlags = new Array(bedrockZones.length).fill(false);
   sounds = new Array(bedrockZones.length).fill(null);
@@ -111,13 +113,43 @@ map.on('load', async () => {
     }
   });
 
+  // Bedrock Labels
+  const labelFeatures = bedrockZones.map(f => {
+    const center = turf.centroid(f);
+    center.properties.label = `DN: ${f.properties.DN}`;
+    return center;
+  });
+  map.addSource('bedrock-labels', { type: 'geojson', data: { type: 'FeatureCollection', features: labelFeatures } });
+  map.addLayer({
+    id: 'bedrock-labels',
+    type: 'symbol',
+    source: 'bedrock-labels',
+    layout: {
+      'text-field': ['get', 'label'],
+      'text-size': 11
+    },
+    paint: {
+      'text-color': '#111',
+      'text-halo-color': '#fff',
+      'text-halo-width': 1
+    }
+  });
+
+  // Load V2 + V3
   await loadGeojsonLayer('v2layer', 'v2.geojson', ['#008000', '#FFFF00', '#8B4513']);
   await loadGeojsonLayer('v3layer', 'v3.geojson', ['#800080', '#FFC0CB', '#00FFFF']);
 
+  // Simulated Line
   map.addSource('live-lines', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-  map.addLayer({ id: 'live-lines', type: 'line', source: 'live-lines', paint: { 'line-color': '#FF0000', 'line-width': 4 } });
+  map.addLayer({
+    id: 'live-lines',
+    type: 'line',
+    source: 'live-lines',
+    paint: { 'line-color': '#FF0000', 'line-width': 4 }
+  });
 
-  map.on('click', (e) => {
+  map.on('click', e => {
+    if (!drawMode) return;
     drawCoords.push(e.lngLat.toArray());
     const feature = {
       type: 'Feature',
@@ -128,11 +160,46 @@ map.on('load', async () => {
   });
 });
 
+document.getElementById('drawToggle').addEventListener('click', () => {
+  drawMode = !drawMode;
+  document.getElementById('drawToggle').textContent = `Draw: ${drawMode ? 'ON' : 'OFF'}`;
+});
+
+document.getElementById('startBtn').addEventListener('click', async () => {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    await Promise.all(bedrockZones.map(async (f, i) => {
+      try {
+        audioBuffers[i] = await loadSound(`/zone_sound${f.properties.DN}.mp3`);
+      } catch {
+        audioBuffers[i] = null;
+      }
+    }));
+  }
+  if (!intervalId) intervalId = setInterval(updateMap, 3000);
+});
+
+document.getElementById('stopBtn').addEventListener('click', () => {
+  clearInterval(intervalId);
+  intervalId = null;
+  drawCoords = [];
+  map.getSource('live-lines').setData({ type: 'FeatureCollection', features: [] });
+  zoneFlags.forEach((_, i) => {
+    if (sounds[i]) {
+      sounds[i].stop();
+      sounds[i] = null;
+    }
+    zoneFlags[i] = false;
+  });
+  document.getElementById('peopleList').innerHTML = '';
+});
+
 async function updateMap() {
   const data = map.getSource('live-lines')._data;
   if (!data || data.features.length === 0) return;
   const pt = turf.point(drawCoords[drawCoords.length - 1]);
   document.getElementById('peopleList').innerHTML = `<li>SimUser</li>`;
+
   bedrockZones.forEach((zone, i) => {
     const inside = turf.booleanPointInPolygon(pt, zone);
     if (inside && !zoneFlags[i] && audioBuffers[i]) {
@@ -150,29 +217,6 @@ async function updateMap() {
     }
   });
 }
-
-document.getElementById('startBtn').onclick = async () => {
-  if (!audioContext) {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    await Promise.all(bedrockZones.map(async (f, i) => {
-      try {
-        const url = `/zone_sound${f.properties.DN}.mp3`;
-        audioBuffers[i] = await loadSound(url);
-      } catch {
-        audioBuffers[i] = null;
-      }
-    }));
-  }
-  intervalId = setInterval(updateMap, 3000);
-};
-
-document.getElementById('stopBtn').onclick = () => {
-  clearInterval(intervalId);
-  intervalId = null;
-  zoneFlags = zoneFlags.map(() => false);
-  sounds.forEach(s => s?.stop());
-  sounds = [];
-};
 
 document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 'bedrockToggle', 'Bedrock');
 document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
