@@ -104,36 +104,6 @@ map.on('load', async () => {
     }
   });
 
-  // Add labels for bedrock zones
-  const bedrockLabels = {
-    type: "FeatureCollection",
-    features: bedrockZones.map((feature) => {
-      const center = turf.centroid(feature);
-      const dn = feature.properties.DN;
-      center.properties.label = `DN: ${dn}\n🎵 zone_sound${dn}.mp3`;
-      return center;
-    })
-  };
-
-  map.addSource('bedrock-labels', { type: 'geojson', data: bedrockLabels });
-  map.addLayer({
-    id: 'bedrock-labels',
-    type: 'symbol',
-    source: 'bedrock-labels',
-    layout: {
-      'text-field': ['get', 'label'],
-      'text-size': 11,
-      'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
-      'text-justify': 'center',
-      'text-anchor': 'center'
-    },
-    paint: {
-      'text-color': '#111',
-      'text-halo-color': '#fff',
-      'text-halo-width': 1
-    }
-  });
-
   // Load V2
   const v2 = await loadGeo('v2.geojson');
   const d2 = v2.features.map(f => f.properties.DN).filter(Number.isFinite);
@@ -164,6 +134,7 @@ map.on('load', async () => {
     }
   });
 
+  // Live line
   map.addSource('live-lines', {
     type: 'geojson',
     data: { type: 'FeatureCollection', features: [] }
@@ -172,22 +143,36 @@ map.on('load', async () => {
     id: 'live-lines',
     type: 'line',
     source: 'live-lines',
-    paint: { 'line-color': '#FF0000', 'line-width': 4 }
+    paint: {
+      'line-color': '#FF0000',
+      'line-width': 4
+    }
   });
 
   map.fitBounds(turf.bbox(bedrock), { padding: 20 });
 });
 
-// Simulation trigger
-document.getElementById('startBtn').onclick = async () => {
-  if (audioCtx.state === 'suspended') await audioCtx.resume();
-  setInterval(updateSimulation, 1000);
-};
+// Fetch new positions
+async function updateMap() {
+  try {
+    const res = await fetch('/api/geo');
+    const data = await res.json();
+    map.getSource('live-lines').setData(data);
 
-// STOP BUTTON
-document.getElementById('stopBtn').onclick = stopAllSounds;
+    const peopleList = document.getElementById('peopleList');
+    const names = new Set(data.features.map(f => f.properties?.name).filter(Boolean));
+    peopleList.innerHTML = '';
+    [...names].sort().forEach(name => {
+      const li = document.createElement('li');
+      li.textContent = name;
+      peopleList.appendChild(li);
+    });
+  } catch (err) {
+    console.error('Error updating live data', err);
+  }
+}
 
-// DRAW TOOL
+// Drawing tool
 map.on('click', (e) => {
   if (!isDrawing) return;
   drawnCoords.push([e.lngLat.lng, e.lngLat.lat]);
@@ -216,39 +201,15 @@ document.getElementById('clearBtn').onclick = () => {
   stopAllSounds();
 };
 
-// LAYER TOGGLES
-function toggleLayer(id, btnId, label) {
-  const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
-  const newVis = vis === 'visible' ? 'none' : 'visible';
-  map.setLayoutProperty(id, 'visibility', newVis);
-  
-  // Also toggle labels if they exist
-  const labelLayer = map.getLayer(`${id}-labels`);
-  if (labelLayer) {
-    map.setLayoutProperty(`${id}-labels`, 'visibility', newVis);
-  }
-  
-  document.getElementById(btnId).textContent = `${label}: ${newVis === 'visible' ? 'ON' : 'OFF'}`;
-}
-document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 'bedrockToggle', 'Bedrock');
-document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
-document.getElementById('v3Toggle').onclick = () => toggleLayer('v3layer', 'v3Toggle', 'V3');
-
-// SOUND PLAYBACK
-function stopAllSounds() {
-  sources.forEach((src, i) => {
-    if (src) {
-      src.stop();
-      src.disconnect();
-      sources[i] = null;
-    }
-    zoneFlags[i] = false;
-  });
-}
-
+// Audio trigger
 async function updateSimulation() {
-  if (!drawnCoords.length) return;
-  const pt = turf.point(drawnCoords[drawnCoords.length - 1]);
+  const coords = drawnCoords.length
+    ? drawnCoords[drawnCoords.length - 1]
+    : null;
+
+  if (!coords) return;
+
+  const pt = turf.point(coords);
 
   for (let i = 0; i < bedrockZones.length; i++) {
     const feature = bedrockZones[i];
@@ -259,8 +220,7 @@ async function updateSimulation() {
       if (!audioBuffers[i]) {
         const dn = feature.properties.DN;
         const soundPath = `/zone_sound${dn}.mp3`;
-        let buffer = await loadSound(soundPath);
-
+        const buffer = await loadSound(soundPath);
         audioBuffers[i] = buffer;
       }
 
@@ -283,6 +243,41 @@ async function updateSimulation() {
     }
   }
 }
+
+// Controls
+document.getElementById('startBtn').onclick = async () => {
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  setInterval(() => {
+    updateSimulation();
+    updateMap();
+  }, 1000);
+};
+
+document.getElementById('stopBtn').onclick = () => {
+  stopAllSounds();
+};
+
+function stopAllSounds() {
+  sources.forEach((src, i) => {
+    if (src) {
+      src.stop();
+      src.disconnect();
+      sources[i] = null;
+    }
+    zoneFlags[i] = false;
+  });
+}
+
+// Toggle layer visibility
+function toggleLayer(id, btnId, label) {
+  const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
+  const newVis = vis === 'visible' ? 'none' : 'visible';
+  map.setLayoutProperty(id, 'visibility', newVis);
+  document.getElementById(btnId).textContent = `${label}: ${newVis === 'visible' ? 'ON' : 'OFF'}`;
+}
+document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 'bedrockToggle', 'Bedrock');
+document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
+document.getElementById('v3Toggle').onclick = () => toggleLayer('v3layer', 'v3Toggle', 'V3');
 </script>
 </body>
 </html>
