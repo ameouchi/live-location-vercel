@@ -152,7 +152,7 @@ map.on('load', async () => {
   map.fitBounds(turf.bbox(bedrock), { padding: 20 });
 });
 
-// Fetch new positions
+// Fetch new positions and check for sounds
 async function updateMap() {
   try {
     const res = await fetch('/api/geo');
@@ -166,6 +166,17 @@ async function updateMap() {
       const li = document.createElement('li');
       li.textContent = name;
       peopleList.appendChild(li);
+    });
+
+    // Check each person's location for sound zones
+    data.features.forEach(feature => {
+      if (feature?.geometry?.coordinates) {
+        const coords = feature.geometry.coordinates;
+        const lastCoord = coords[coords.length - 1];
+        const pt = turf.point(lastCoord);
+        
+        checkSoundZones(pt);
+      }
     });
   } catch (err) {
     console.error('Error updating live data', err);
@@ -201,16 +212,8 @@ document.getElementById('clearBtn').onclick = () => {
   stopAllSounds();
 };
 
-// Audio trigger
-async function updateSimulation() {
-  const coords = drawnCoords.length
-    ? drawnCoords[drawnCoords.length - 1]
-    : null;
-
-  if (!coords) return;
-
-  const pt = turf.point(coords);
-
+// Check sound zones for a given point
+async function checkSoundZones(pt) {
   for (let i = 0; i < bedrockZones.length; i++) {
     const feature = bedrockZones[i];
     const polygon = turf.polygon(feature.geometry.coordinates);
@@ -242,6 +245,18 @@ async function updateSimulation() {
       zoneFlags[i] = false;
     }
   }
+}
+
+// Audio trigger for drawn coordinates
+async function updateSimulation() {
+  const coords = drawnCoords.length
+    ? drawnCoords[drawnCoords.length - 1]
+    : null;
+
+  if (!coords) return;
+
+  const pt = turf.point(coords);
+  await checkSoundZones(pt);
 }
 
 // Controls
