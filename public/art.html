@@ -65,20 +65,94 @@ const map = new mapboxgl.Map({
   zoom: 16
 });
 
-let bedrockZones = [], zoneFlags = [], audioBuffers = [], sources = [];
-let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-let drawnCoords = [], isDrawing = false;
+/* ---------- MOBILE-FRIENDLY AUDIO INTEGRATION ---------- */
+let audioCtx = null;
+const playingSources = new Set();
+const MAX_SIMULTANEOUS = 6; // tweak for your phone
 
-async function loadSound(url) {
+function ensureAudioUnlocked() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') {
+    return audioCtx.resume();
+  }
+  return Promise.resolve();
+}
+
+// One-time unlock for iOS (first touch or click)
+function oneTimeUnlock() {
+  ensureAudioUnlocked().finally(() => {
+    window.removeEventListener('touchstart', oneTimeUnlock, true);
+    window.removeEventListener('click', oneTimeUnlock, true);
+  });
+}
+window.addEventListener('touchstart', oneTimeUnlock, true);
+window.addEventListener('click', oneTimeUnlock, true);
+
+// Try to resume when tab returns to foreground
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+});
+
+// Decode queue to avoid spikes
+const decodeQueue = [];
+let decoding = false;
+
+async function loadSoundQueued(url) {
+  return new Promise((resolve) => {
+    decodeQueue.push({ url, resolve });
+    processDecodeQueue();
+  });
+}
+async function processDecodeQueue() {
+  if (decoding || decodeQueue.length === 0) return;
+  decoding = true;
+  const { url, resolve } = decodeQueue.shift();
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { cache: 'force-cache' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     const buf = await res.arrayBuffer();
-    return await audioCtx.decodeAudioData(buf);
+    const audioBuffer = await audioCtx.decodeAudioData(buf);
+    resolve(audioBuffer);
   } catch (e) {
-    console.warn('❌ Could not load sound:', url);
-    return null;
+    console.warn('❌ Could not load sound:', url, e.message || e);
+    resolve(null);
+  } finally {
+    decoding = false;
+    setTimeout(processDecodeQueue, 50);
   }
 }
+
+// Use this everywhere we previously decoded
+async function loadSound(url) {
+  await ensureAudioUnlocked();
+  return loadSoundQueued(url);
+}
+
+// Start a zone sound with a polyphony cap
+function startZoneSound(i, buffer) {
+  if (!buffer) return null;
+  if (playingSources.size >= MAX_SIMULTANEOUS) {
+    const oldest = playingSources.values().next().value;
+    try { oldest.stop(0); oldest.disconnect(); } catch {}
+    playingSources.delete(oldest);
+  }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  src.loop = true;
+  src.connect(audioCtx.destination);
+  src.start(0);
+  playingSources.add(src);
+  return src;
+}
+
+/* ---------- MAP / LAYERS / LOGIC ---------- */
+
+let bedrockZones = [], zoneFlags = [], audioBuffers = [], sources = [];
+let drawnCoords = [], isDrawing = false;
 
 map.on('load', async () => {
   const loadGeo = async (file) => (await fetch(file)).json();
@@ -89,9 +163,11 @@ map.on('load', async () => {
   const dns = bedrockZones.map(f => f.properties.DN).filter(Number.isFinite);
   const [min, max] = [Math.min(...dns), Math.max(...dns)];
   const mid = (min + max) / 2;
+
+  // lazy-load buffers on demand for mobile
   audioBuffers = new Array(bedrockZones.length).fill(null);
-  zoneFlags = new Array(bedrockZones.length).fill(false);
-  sources = new Array(bedrockZones.length).fill(null);
+  zoneFlags   = new Array(bedrockZones.length).fill(false);
+  sources     = new Array(bedrockZones.length).fill(null);
 
   map.addSource('bedrock', { type: 'geojson', data: bedrock });
   map.addLayer({
@@ -104,7 +180,7 @@ map.on('load', async () => {
     }
   });
 
-  // Load V2
+  // V2
   const v2 = await loadGeo('v2.geojson');
   const d2 = v2.features.map(f => f.properties.DN).filter(Number.isFinite);
   const [min2, max2] = [Math.min(...d2), Math.max(...d2)];
@@ -119,7 +195,7 @@ map.on('load', async () => {
     }
   });
 
-  // Load V3
+  // V3
   const v3 = await loadGeo('v3.geojson');
   const d3 = v3.features.map(f => f.properties.DN).filter(Number.isFinite);
   const [min3, max3] = [Math.min(...d3), Math.max(...d3)];
@@ -143,10 +219,7 @@ map.on('load', async () => {
     id: 'live-lines',
     type: 'line',
     source: 'live-lines',
-    paint: {
-      'line-color': '#FF0000',
-      'line-width': 4
-    }
+    paint: { 'line-color': '#FF0000', 'line-width': 4 }
   });
 
   map.fitBounds(turf.bbox(bedrock), { padding: 20 });
@@ -174,7 +247,6 @@ async function updateMap() {
         const coords = feature.geometry.coordinates;
         const lastCoord = coords[coords.length - 1];
         const pt = turf.point(lastCoord);
-        
         checkSoundZones(pt);
       }
     });
@@ -191,10 +263,7 @@ map.on('click', (e) => {
     type: 'FeatureCollection',
     features: [{
       type: 'Feature',
-      geometry: {
-        type: 'LineString',
-        coordinates: drawnCoords
-      }
+      geometry: { type: 'LineString', coordinates: drawnCoords }
     }]
   };
   map.getSource('live-lines').setData(line);
@@ -212,7 +281,7 @@ document.getElementById('clearBtn').onclick = () => {
   stopAllSounds();
 };
 
-// Check sound zones for a given point
+// Check sound zones for a given point (uses startZoneSound)
 async function checkSoundZones(pt) {
   for (let i = 0; i < bedrockZones.length; i++) {
     const feature = bedrockZones[i];
@@ -226,20 +295,17 @@ async function checkSoundZones(pt) {
         const buffer = await loadSound(soundPath);
         audioBuffers[i] = buffer;
       }
-
       if (audioBuffers[i]) {
-        const src = audioCtx.createBufferSource();
-        src.buffer = audioBuffers[i];
-        src.loop = true;
-        src.connect(audioCtx.destination);
-        src.start();
-        sources[i] = src;
-        zoneFlags[i] = true;
+        const src = startZoneSound(i, audioBuffers[i]);
+        if (src) {
+          sources[i] = src;
+          zoneFlags[i] = true;
+        }
       }
     } else if (!isInside && zoneFlags[i]) {
       if (sources[i]) {
-        sources[i].stop();
-        sources[i].disconnect();
+        try { sources[i].stop(0); sources[i].disconnect(); } catch {}
+        playingSources.delete(sources[i]);
         sources[i] = null;
       }
       zoneFlags[i] = false;
@@ -249,23 +315,19 @@ async function checkSoundZones(pt) {
 
 // Audio trigger for drawn coordinates
 async function updateSimulation() {
-  const coords = drawnCoords.length
-    ? drawnCoords[drawnCoords.length - 1]
-    : null;
-
+  const coords = drawnCoords.length ? drawnCoords[drawnCoords.length - 1] : null;
   if (!coords) return;
-
   const pt = turf.point(coords);
   await checkSoundZones(pt);
 }
 
-// Controls
+// Controls (uses ensureAudioUnlocked + slightly slower tick for mobile)
 document.getElementById('startBtn').onclick = async () => {
-  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  await ensureAudioUnlocked();
   setInterval(() => {
     updateSimulation();
     updateMap();
-  }, 1000);
+  }, 1200);
 };
 
 document.getElementById('stopBtn').onclick = () => {
@@ -273,14 +335,20 @@ document.getElementById('stopBtn').onclick = () => {
 };
 
 function stopAllSounds() {
+  // stop any zone sources
   sources.forEach((src, i) => {
     if (src) {
-      src.stop();
-      src.disconnect();
+      try { src.stop(0); src.disconnect(); } catch {}
+      playingSources.delete(src);
       sources[i] = null;
     }
     zoneFlags[i] = false;
   });
+  // just in case, stop anything lingering in the global set
+  for (const src of Array.from(playingSources)) {
+    try { src.stop(0); src.disconnect(); } catch {}
+    playingSources.delete(src);
+  }
 }
 
 // Toggle layer visibility
