@@ -8,61 +8,80 @@
   <link href="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.css" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
-    body { margin: 0; padding: 0; font-family: sans-serif; }
-    #map { position: absolute; top: 0; bottom: 0; left: 220px; right: 0; filter: invert(1) hue-rotate(180deg); }
+    :root { --ui: #111; --bg: #fff; --acc: #eaeef3; --btn: #0f62fe; --danger:#e63946; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    #map { position: absolute; top: 0; bottom: 0; left: 260px; right: 0; filter: invert(1) hue-rotate(180deg); }
     #sidebar {
-      position: absolute;
-      top: 0; left: 0; bottom: 0;
-      width: 220px;
-      background: rgba(255,255,255,0.95);
-      padding: 10px;
-      overflow-y: auto;
-      z-index: 998;
-      border-right: 1px solid #ccc;
+      position: absolute; inset: 0 auto 0 0; width: 260px; background: var(--bg);
+      border-right: 1px solid #ddd; padding: 12px; overflow-y: auto; z-index: 998;
     }
-    #peopleList { list-style: none; padding: 0; margin: 0; }
-    #peopleList li { font-size: 14px; border-bottom: 1px solid #eee; padding: 4px 0; }
-    button { margin-top: 10px; }
+    h3 { margin: 6px 0 10px; font-size: 16px; color: var(--ui); }
+    .group { background:#fff; border:1px solid #ddd; border-radius:10px; padding:10px; margin-bottom:10px; }
+    .row { display:flex; gap:8px; }
+    .row > * { flex:1; }
+    input[type="text"] {
+      width: 100%; padding: 8px 10px; border:1px solid #ccc; border-radius:8px;
+    }
+    button {
+      padding: 8px 10px; border-radius:8px; border:1px solid #ccc; background:#fff; cursor:pointer;
+    }
+    .primary { background: var(--btn); color:#fff; border-color: var(--btn); }
+    .danger  { background: var(--danger); color:#fff; border-color: var(--danger); }
+    .ghost   { background:#fff; color:#111; border:1px solid #bbb; }
+    #peopleList { list-style: none; padding: 0; margin: 0; max-height: 120px; overflow:auto; border-top:1px dashed #ddd; }
+    #peopleList li { font-size: 13px; padding: 4px 0; border-bottom:1px dashed #eee; }
     .layerToggle, .drawBtn {
-      position: absolute;
-      top: 20px;
-      background: white;
-      border: 1px solid #ccc;
-      z-index: 999;
-      cursor: pointer;
-      padding: 6px 12px;
+      position: absolute; top: 12px; background: #fff; border:1px solid #ccc; z-index: 999; cursor: pointer; padding: 6px 10px; border-radius:8px;
     }
-    #bedrockToggle { left: 340px; }
-    #v2Toggle { left: 440px; }
-    #v3Toggle { left: 540px; }
-    #drawBtn { left: 640px; }
-    #clearBtn { left: 740px; }
+    #bedrockToggle { left: 280px; }
+    #v2Toggle { left: 380px; }
+    #v3Toggle { left: 480px; }
+    #drawBtn { left: 580px; }
+    #clearBtn { left: 680px; }
+    .hint { font-size:12px; color:#666; margin-top:6px; }
   </style>
 </head>
 <body>
 
   <div id="sidebar">
     <h3>Shared Locations</h3>
-    
-    <div style="margin-bottom: 15px;">
-      <input id="name" type="text" placeholder="Enter your name" style="width: 100%; padding: 8px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px;" />
-      <button id="shareLocationBtn" style="width: 100%; padding: 8px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">Start Sharing Location</button>
-      <button id="stopSharingBtn" style="width: 100%; padding: 8px; margin-top: 5px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; display: none;">Stop Sharing</button>
+
+    <div class="group">
+      <div class="row" style="margin-bottom:8px;">
+        <input id="name" type="text" placeholder="Enter your name" />
+      </div>
+      <div class="row">
+        <button id="shareLocationBtn" class="primary">Start Sharing Location</button>
+        <button id="stopSharingBtn" class="danger" style="display:none;">Stop</button>
+      </div>
+      <div class="hint">Mobile requires HTTPS or localhost for GPS.</div>
     </div>
-    
-    <ul id="peopleList"></ul>
-    <button id="startBtn">Start Simulation</button>
-    <button id="stopBtn">Stop Sounds</button>
-    <button id="enableAudioBtn">Enable Sound</button>
-    <button id="testMp3Btn">Test MP3</button>
+
+    <div class="group">
+      <div class="row">
+        <button id="startBtn" class="primary">▶ Start</button>
+        <button id="stopBtn"  class="ghost">■ Stop Sounds</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button id="enableAudioBtn" class="ghost">🔊 Enable Sound</button>
+        <button id="testMp3Btn" class="ghost">Test MP3</button>
+      </div>
+      <div class="hint">On iPhone, flip the ring/silent switch to <b>Ring</b> and raise volume.</div>
+    </div>
+
+    <div class="group">
+      <strong>People</strong>
+      <ul id="peopleList"></ul>
+    </div>
   </div>
 
-<div id="map"></div>
-<button id="bedrockToggle" class="layerToggle">Bedrock: ON</button>
-<button id="v2Toggle" class="layerToggle">V2: ON</button>
-<button id="v3Toggle" class="layerToggle">V3: ON</button>
-<button id="drawBtn" class="drawBtn">Draw Line</button>
-<button id="clearBtn" class="drawBtn">Clear</button>
+  <div id="map"></div>
+  <button id="bedrockToggle" class="layerToggle">Bedrock: ON</button>
+  <button id="v2Toggle" class="layerToggle">V2: ON</button>
+  <button id="v3Toggle" class="layerToggle">V3: ON</button>
+  <button id="drawBtn" class="drawBtn">Draw Line</button>
+  <button id="clearBtn" class="drawBtn">Clear</button>
 
 <script>
 mapboxgl.accessToken = 'pk.eyJ1IjoibGFtZW91Y2hpIiwiYSI6ImNsa3ZqdHZtMDBjbTQzcXBpNzRyc2ljNGsifQ.287002jl7xT9SBub-dbBbQ';
@@ -74,11 +93,11 @@ const map = new mapboxgl.Map({
   zoom: 16
 });
 
-/* ---------- MOBILE-FRIENDLY AUDIO INTEGRATION ---------- */
+/* ---------- MOBILE-FRIENDLY AUDIO ---------- */
 let audioCtx = null;
 let masterGain = null;
 const playingSources = new Set();
-const MAX_SIMULTANEOUS = 6; // tweak for your phone
+const MAX_SIMULTANEOUS = 6;
 
 function createContextIfNeeded() {
   if (!audioCtx) {
@@ -88,7 +107,6 @@ function createContextIfNeeded() {
     masterGain.connect(audioCtx.destination);
   }
 }
-
 async function ensureAudioUnlocked() {
   createContextIfNeeded();
   if (audioCtx.state === 'suspended') {
@@ -96,15 +114,12 @@ async function ensureAudioUnlocked() {
   }
   return audioCtx.state;
 }
-
-// Strong unlock: route a real <audio> element through the AudioContext, plus a short beep.
-// Must run directly inside a user gesture (the Enable Sound button).
 async function strongUnlock() {
   createContextIfNeeded();
 
-  // 1) Real media element (quiet) routed into the context
+  // route a real media element quietly through the context
   const el = document.createElement('audio');
-  el.src = '/zone_sound1.mp3';        // use a small/known-valid mp3 that exists on your server
+  el.src = '/zone_sound1.mp3';
   el.crossOrigin = 'anonymous';
   el.preload = 'auto';
   el.loop = false;
@@ -112,16 +127,15 @@ async function strongUnlock() {
   el.muted = false;
   el.volume = 0.05;
   document.body.appendChild(el);
-
   try {
     const node = audioCtx.createMediaElementSource(el);
-    node.connect(masterGain); // goes into the context graph
-    await el.play();          // start playback (quiet)
+    node.connect(masterGain);
+    await el.play();
   } catch (e) {
     console.warn('MediaElement unlock failed:', e);
   }
 
-  // 2) Short WebAudio beep
+  // short beep
   try {
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
@@ -135,7 +149,6 @@ async function strongUnlock() {
     console.warn('Oscillator unlock failed:', e);
   }
 
-  // Stop and clean up the element after a moment
   setTimeout(() => {
     try { el.pause(); } catch {}
     el.src = '';
@@ -143,11 +156,10 @@ async function strongUnlock() {
   }, 1200);
 }
 
-// Decode queue to avoid spikes on mobile
+// decode queue
 const decodeQueue = [];
 let decoding = false;
-
-async function loadSoundQueued(url) {
+function loadSoundQueued(url) {
   return new Promise((resolve) => {
     decodeQueue.push({ url, resolve });
     processDecodeQueue();
@@ -172,12 +184,10 @@ async function processDecodeQueue() {
     setTimeout(processDecodeQueue, 50);
   }
 }
-
 async function loadSound(url) {
   createContextIfNeeded();
   return loadSoundQueued(url);
 }
-
 function startZoneSound(buffer) {
   if (!buffer) return null;
   if (playingSources.size >= MAX_SIMULTANEOUS) {
@@ -194,35 +204,29 @@ function startZoneSound(buffer) {
   return src;
 }
 
-/* ---------- MAP / LAYERS / LOGIC ---------- */
+/* ---------- MAP / DATA / SOUND LOGIC ---------- */
 let bedrockZones = [], zoneFlags = [], audioBuffers = [], sources = [];
 let drawnCoords = [], isDrawing = false;
-let watchId = null; // For location sharing
 
 map.on('load', async () => {
   const loadGeo = async (file) => (await fetch(file)).json();
 
-  // Load bedrock
+  // Bedrock
   const bedrock = await loadGeo('bedrock_depth_vector.geojson');
   bedrockZones = bedrock.features;
   const dns = bedrockZones.map(f => f.properties.DN).filter(Number.isFinite);
   const [min, max] = [Math.min(...dns), Math.max(...dns)];
   const mid = (min + max) / 2;
 
-  // lazy-load buffers on demand for mobile
   audioBuffers = new Array(bedrockZones.length).fill(null);
   zoneFlags   = new Array(bedrockZones.length).fill(false);
   sources     = new Array(bedrockZones.length).fill(null);
 
   map.addSource('bedrock', { type: 'geojson', data: bedrock });
   map.addLayer({
-    id: 'bedrock',
-    type: 'fill',
-    source: 'bedrock',
-    paint: {
-      'fill-color': ['interpolate', ['linear'], ['get', 'DN'], min, '#FF0000', mid, '#FFFFFF', max, '#0000FF'],
-      'fill-opacity': 0.6, 'fill-outline-color': '#000'
-    }
+    id: 'bedrock', type: 'fill', source: 'bedrock',
+    paint: { 'fill-color': ['interpolate', ['linear'], ['get', 'DN'], min, '#FF0000', mid, '#FFFFFF', max, '#0000FF'],
+             'fill-opacity': 0.6, 'fill-outline-color': '#000' }
   });
 
   // V2
@@ -231,13 +235,9 @@ map.on('load', async () => {
   const [min2, max2] = [Math.min(...d2), Math.max(...d2)];
   map.addSource('v2layer', { type: 'geojson', data: v2 });
   map.addLayer({
-    id: 'v2layer',
-    type: 'fill',
-    source: 'v2layer',
-    paint: {
-      'fill-color': ['interpolate', ['linear'], ['get', 'DN'], min2, '#008000', (min2 + max2) / 2, '#FFFF00', max2, '#8B4513'],
-      'fill-opacity': 0.4, 'fill-outline-color': '#000'
-    }
+    id:'v2layer', type:'fill', source:'v2layer',
+    paint:{'fill-color':['interpolate',['linear'],['get','DN'],min2,'#008000',(min2+max2)/2,'#FFFF00',max2,'#8B4513'],
+           'fill-opacity':0.4,'fill-outline-color':'#000'}
   });
 
   // V3
@@ -246,31 +246,20 @@ map.on('load', async () => {
   const [min3, max3] = [Math.min(...d3), Math.max(...d3)];
   map.addSource('v3layer', { type: 'geojson', data: v3 });
   map.addLayer({
-    id: 'v3layer',
-    type: 'fill',
-    source: 'v3layer',
-    paint: {
-      'fill-color': ['interpolate', ['linear'], ['get', 'DN'], min3, '#800080', (min3 + max3) / 2, '#FFC0CB', max3, '#00FFFF'],
-      'fill-opacity': 0.4, 'fill-outline-color': '#000'
-    }
+    id:'v3layer', type:'fill', source:'v3layer',
+    paint:{'fill-color':['interpolate',['linear'],['get','DN'],min3,'#800080',(min3+max3)/2,'#FFC0CB',max3,'#00FFFF'],
+           'fill-opacity':0.4,'fill-outline-color':'#000'}
   });
 
   // Live line
-  map.addSource('live-lines', {
-    type: 'geojson',
-    data: { type: 'FeatureCollection', features: [] }
-  });
-  map.addLayer({
-    id: 'live-lines',
-    type: 'line',
-    source: 'live-lines',
-    paint: { 'line-color': '#FF0000', 'line-width': 4 }
-  });
+  map.addSource('live-lines', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }});
+  map.addLayer({ id:'live-lines', type:'line', source:'live-lines',
+    paint:{ 'line-color':'#FF0000', 'line-width':4 } });
 
   map.fitBounds(turf.bbox(bedrock), { padding: 20 });
 });
 
-// Fetch new positions and check for sounds
+// Live data + people list + zone checks
 async function updateMap() {
   try {
     const res = await fetch('/api/geo');
@@ -281,14 +270,12 @@ async function updateMap() {
     const names = new Set(data.features.map(f => f.properties?.name).filter(Boolean));
     peopleList.innerHTML = '';
     [...names].sort().forEach(name => {
-      const li = document.createElement('li');
-      li.textContent = name;
-      peopleList.appendChild(li);
+      const li = document.createElement('li'); li.textContent = name; peopleList.appendChild(li);
     });
 
     data.features.forEach(feature => {
-      if (feature?.geometry?.coordinates) {
-        const coords = feature.geometry.coordinates;
+      const coords = feature?.geometry?.coordinates;
+      if (coords && coords.length) {
         const lastCoord = coords[coords.length - 1];
         const pt = turf.point(lastCoord);
         checkSoundZones(pt);
@@ -299,33 +286,21 @@ async function updateMap() {
   }
 }
 
-// Drawing tool
+// Draw points to trigger sound manually
 map.on('click', (e) => {
   if (!isDrawing) return;
   drawnCoords.push([e.lngLat.lng, e.lngLat.lat]);
-  const line = {
-    type: 'FeatureCollection',
-    features: [{
-      type: 'Feature',
-      geometry: { type: 'LineString', coordinates: drawnCoords }
-    }]
-  };
+  const line = { type:'FeatureCollection', features:[{ type:'Feature', geometry:{ type:'LineString', coordinates:drawnCoords } }] };
   map.getSource('live-lines').setData(line);
 });
 
-document.getElementById('drawBtn').onclick = () => {
-  isDrawing = true;
-  drawnCoords = [];
-};
-
+document.getElementById('drawBtn').onclick = () => { isDrawing = true; drawnCoords = []; };
 document.getElementById('clearBtn').onclick = () => {
-  isDrawing = false;
-  drawnCoords = [];
+  isDrawing = false; drawnCoords = [];
   map.getSource('live-lines').setData({ type: 'FeatureCollection', features: [] });
   stopAllSounds();
 };
 
-// Check sound zones for a given point
 async function checkSoundZones(pt) {
   for (let i = 0; i < bedrockZones.length; i++) {
     const feature = bedrockZones[i];
@@ -336,15 +311,11 @@ async function checkSoundZones(pt) {
       if (!audioBuffers[i]) {
         const dn = feature.properties.DN;
         const soundPath = `/zone_sound${dn}.mp3`;
-        const buffer = await loadSound(soundPath);
-        audioBuffers[i] = buffer;
+        audioBuffers[i] = await loadSound(soundPath);
       }
       if (audioBuffers[i]) {
         const src = startZoneSound(audioBuffers[i]);
-        if (src) {
-          sources[i] = src;
-          zoneFlags[i] = true;
-        }
+        if (src) { sources[i] = src; zoneFlags[i] = true; }
       }
     } else if (!isInside && zoneFlags[i]) {
       if (sources[i]) {
@@ -357,94 +328,32 @@ async function checkSoundZones(pt) {
   }
 }
 
-// Audio trigger for drawn coordinates
 async function updateSimulation() {
-  const coords = drawnCoords.length ? drawnCoords[drawnCoords.length - 1] : null;
-  if (!coords) return;
-  const pt = turf.point(coords);
+  if (!drawnCoords.length) return;
+  const pt = turf.point(drawnCoords[drawnCoords.length - 1]);
   await checkSoundZones(pt);
 }
 
 // Controls
-document.getElementById('startBtn').onclick = async (e) => {
-  // Make sure we unlock immediately on this gesture:
+document.getElementById('startBtn').onclick = async () => {
   await strongUnlock();
-  setInterval(() => {
-    updateSimulation();
-    updateMap();
-  }, 1200);
+  setInterval(() => { updateSimulation(); updateMap(); }, 1200);
 };
-
-document.getElementById('stopBtn').onclick = () => {
-  stopAllSounds();
-};
-
+document.getElementById('stopBtn').onclick = () => stopAllSounds();
 document.getElementById('enableAudioBtn').onclick = async () => {
   await strongUnlock();
-  alert('Sound enabled. If you still hear nothing on iPhone, flip the ring/silent switch to RING and raise volume.');
+  alert('Sound enabled. If silent on iPhone, set ring switch to RING and raise volume.');
 };
-
 document.getElementById('testMp3Btn').onclick = async () => {
-  const el = new Audio('/zone_sound1.mp3'); // change if needed
-  el.playsInline = true;
-  el.crossOrigin = 'anonymous';
+  const el = new Audio('/zone_sound1.mp3');
+  el.playsInline = true; el.crossOrigin = 'anonymous';
   try { await el.play(); } catch(e) { console.warn('MP3 test failed', e); }
   setTimeout(() => { try { el.pause(); el.src=''; } catch{} }, 1500);
 };
 
-// Location sharing functionality
-document.getElementById('shareLocationBtn').onclick = () => {
-  const name = document.getElementById('name').value.trim();
-  if (!name) return alert('Enter your name');
-  if (!navigator.geolocation) return alert('Geolocation not supported');
-
-  watchId = navigator.geolocation.watchPosition(pos => {
-    console.log("Sending position:", pos.coords);
-    fetch('/api/geo', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name,
-        coords: {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude
-        },
-        timestamp: Date.now()
-      })
-    });
-  }, error => {
-    console.error("Geolocation error", error);
-  }, {
-    enableHighAccuracy: true,
-    maximumAge: 1000,
-    timeout: 5000
-  });
-
-  // Update UI
-  document.getElementById('shareLocationBtn').style.display = 'none';
-  document.getElementById('stopSharingBtn').style.display = 'block';
-  document.getElementById('name').disabled = true;
-};
-
-document.getElementById('stopSharingBtn').onclick = () => {
-  if (watchId !== null) {
-    navigator.geolocation.clearWatch(watchId);
-    watchId = null;
-    
-    // Update UI
-    document.getElementById('shareLocationBtn').style.display = 'block';
-    document.getElementById('stopSharingBtn').style.display = 'none';
-    document.getElementById('name').disabled = false;
-  }
-};
-
 function stopAllSounds() {
   sources.forEach((src, i) => {
-    if (src) {
-      try { src.stop(0); src.disconnect(); } catch {}
-      playingSources.delete(src);
-      sources[i] = null;
-    }
+    if (src) { try { src.stop(0); src.disconnect(); } catch {} playingSources.delete(src); sources[i] = null; }
     zoneFlags[i] = false;
   });
   for (const src of Array.from(playingSources)) {
@@ -463,6 +372,94 @@ function toggleLayer(id, btnId, label) {
 document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 'bedrockToggle', 'Bedrock');
 document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
 document.getElementById('v3Toggle').onclick = () => toggleLayer('v3layer', 'v3Toggle', 'V3');
+
+/* ---------- LOCATION SHARING (ROBUST) ---------- */
+const nameInput = document.getElementById('name');
+const shareBtn  = document.getElementById('shareLocationBtn');
+const stopShareBtn = document.getElementById('stopSharingBtn');
+
+let watchId = null, lastSentAt = 0, lastCoords = null;
+
+function isSecureContextForGeo() {
+  return location.protocol === 'https:' ||
+         location.hostname === 'localhost' ||
+         location.hostname === '127.0.0.1';
+}
+function requestGeoOnce() {
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(
+      () => resolve(true),
+      (err) => reject(err),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+    );
+  });
+}
+async function startSharing() {
+  const name = nameInput.value.trim();
+  if (!name) return alert('Enter your name');
+  if (!('geolocation' in navigator)) return alert('Geolocation not supported in this browser.');
+  if (!isSecureContextForGeo()) return alert('Use HTTPS or localhost for mobile GPS.');
+
+  try { await requestGeoOnce(); }
+  catch (e) { console.error('Initial geolocation request failed:', e); alert('Location permission denied or unavailable.'); return; }
+
+  shareBtn.style.display = 'none';
+  stopShareBtn.style.display = 'inline-block';
+  nameInput.disabled = true;
+
+  const MIN_INTERVAL_MS = 2000;
+
+  watchId = navigator.geolocation.watchPosition(async (pos) => {
+    const now = Date.now();
+    const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+
+    const sameAsLast = lastCoords &&
+      Math.abs(coords.lat - lastCoords.lat) < 1e-7 &&
+      Math.abs(coords.lng - lastCoords.lng) < 1e-7;
+
+    if (now - lastSentAt < MIN_INTERVAL_MS && sameAsLast) return;
+
+    lastCoords = coords;
+    lastSentAt = now;
+
+    try {
+      const res = await fetch('/api/geo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, coords, timestamp: now }),
+        keepalive: true
+      });
+      if (!res.ok) console.warn('POST /api/geo failed:', res.status, res.statusText);
+    } catch (err) {
+      console.warn('Sending location failed:', err);
+    }
+  }, (err) => {
+    console.error('watchPosition error:', err);
+    alert('Location error: ' + (err.message || err));
+    stopSharing();
+  }, { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 });
+}
+function stopSharing() {
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+  shareBtn.style.display = 'inline-block';
+  stopShareBtn.style.display = 'none';
+  nameInput.disabled = false;
+}
+shareBtn.onclick = startSharing;
+stopShareBtn.onclick = stopSharing;
+
+window.addEventListener('pagehide', () => {
+  try {
+    navigator.sendBeacon?.('/api/geo', JSON.stringify({
+      name: nameInput.value.trim(),
+      stop: true,
+      timestamp: Date.now()
+    }));
+  } catch {}
+});
 </script>
 </body>
 </html>
