@@ -46,6 +46,9 @@
   <ul id="peopleList"></ul>
   <button id="startBtn">▶ Start Simulation</button>
   <button id="stopBtn">■ Stop Sounds</button>
+  <!-- Mobile audio diagnostics -->
+  <button id="enableAudioBtn">🔊 Enable Sound / Test Beep</button>
+  <button id="testMp3Btn">▶ Test MP3</button>
 </div>
 
 <div id="map"></div>
@@ -67,17 +70,21 @@ const map = new mapboxgl.Map({
 
 /* ---------- MOBILE-FRIENDLY AUDIO INTEGRATION ---------- */
 let audioCtx = null;
+let masterGain = null;
 const playingSources = new Set();
 const MAX_SIMULTANEOUS = 6; // tweak for your phone
 
-function ensureAudioUnlocked() {
+async function ensureAudioUnlocked() {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 1.0;
+    masterGain.connect(audioCtx.destination);
   }
   if (audioCtx.state === 'suspended') {
-    return audioCtx.resume();
+    try { await audioCtx.resume(); } catch {}
   }
-  return Promise.resolve();
+  return audioCtx.state;
 }
 
 // One-time unlock for iOS (first touch or click)
@@ -90,14 +97,14 @@ function oneTimeUnlock() {
 window.addEventListener('touchstart', oneTimeUnlock, true);
 window.addEventListener('click', oneTimeUnlock, true);
 
-// Try to resume when tab returns to foreground
+// Resume when tab returns to foreground
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && audioCtx && audioCtx.state === 'suspended') {
     audioCtx.resume();
   }
 });
 
-// Decode queue to avoid spikes
+// Decode queue to avoid spikes on mobile
 const decodeQueue = [];
 let decoding = false;
 
@@ -115,6 +122,7 @@ async function processDecodeQueue() {
     const res = await fetch(url, { cache: 'force-cache' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const buf = await res.arrayBuffer();
+    await ensureAudioUnlocked();
     const audioBuffer = await audioCtx.decodeAudioData(buf);
     resolve(audioBuffer);
   } catch (e) {
@@ -126,14 +134,13 @@ async function processDecodeQueue() {
   }
 }
 
-// Use this everywhere we previously decoded
 async function loadSound(url) {
   await ensureAudioUnlocked();
   return loadSoundQueued(url);
 }
 
 // Start a zone sound with a polyphony cap
-function startZoneSound(i, buffer) {
+function startZoneSound(buffer) {
   if (!buffer) return null;
   if (playingSources.size >= MAX_SIMULTANEOUS) {
     const oldest = playingSources.values().next().value;
@@ -143,14 +150,13 @@ function startZoneSound(i, buffer) {
   const src = audioCtx.createBufferSource();
   src.buffer = buffer;
   src.loop = true;
-  src.connect(audioCtx.destination);
+  src.connect(masterGain || audioCtx.destination);
   src.start(0);
   playingSources.add(src);
   return src;
 }
 
 /* ---------- MAP / LAYERS / LOGIC ---------- */
-
 let bedrockZones = [], zoneFlags = [], audioBuffers = [], sources = [];
 let drawnCoords = [], isDrawing = false;
 
@@ -281,7 +287,7 @@ document.getElementById('clearBtn').onclick = () => {
   stopAllSounds();
 };
 
-// Check sound zones for a given point (uses startZoneSound)
+// Check sound zones for a given point
 async function checkSoundZones(pt) {
   for (let i = 0; i < bedrockZones.length; i++) {
     const feature = bedrockZones[i];
@@ -296,7 +302,7 @@ async function checkSoundZones(pt) {
         audioBuffers[i] = buffer;
       }
       if (audioBuffers[i]) {
-        const src = startZoneSound(i, audioBuffers[i]);
+        const src = startZoneSound(audioBuffers[i]);
         if (src) {
           sources[i] = src;
           zoneFlags[i] = true;
@@ -321,7 +327,7 @@ async function updateSimulation() {
   await checkSoundZones(pt);
 }
 
-// Controls (uses ensureAudioUnlocked + slightly slower tick for mobile)
+// Controls
 document.getElementById('startBtn').onclick = async () => {
   await ensureAudioUnlocked();
   setInterval(() => {
@@ -335,7 +341,6 @@ document.getElementById('stopBtn').onclick = () => {
 };
 
 function stopAllSounds() {
-  // stop any zone sources
   sources.forEach((src, i) => {
     if (src) {
       try { src.stop(0); src.disconnect(); } catch {}
@@ -344,7 +349,6 @@ function stopAllSounds() {
     }
     zoneFlags[i] = false;
   });
-  // just in case, stop anything lingering in the global set
   for (const src of Array.from(playingSources)) {
     try { src.stop(0); src.disconnect(); } catch {}
     playingSources.delete(src);
@@ -361,6 +365,46 @@ function toggleLayer(id, btnId, label) {
 document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 'bedrockToggle', 'Bedrock');
 document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
 document.getElementById('v3Toggle').onclick = () => toggleLayer('v3layer', 'v3Toggle', 'V3');
+
+/* ---------- Mobile diagnostics: Beep + Test MP3 ---------- */
+async function testBeep() {
+  const state = await ensureAudioUnlocked();
+  console.log('AudioContext state:', state);
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  gain.gain.value = 0.2;
+  osc.frequency.value = 880;
+  osc.connect(gain);
+  gain.connect(masterGain || audioCtx.destination);
+  osc.start();
+  setTimeout(() => { try { osc.stop(); } catch {} }, 200);
+}
+async function testMp3File(url) {
+  await ensureAudioUnlocked();
+  const el = new Audio();
+  el.src = url;
+  el.preload = 'auto';
+  el.loop = false;
+  el.crossOrigin = 'anonymous';
+  el.playsInline = true;
+  try {
+    await el.play();
+    console.log('MP3 started:', url);
+    setTimeout(() => { el.pause(); el.src = ''; }, 1500);
+  } catch (err) {
+    console.warn('MP3 failed to play:', url, err);
+    alert('Test MP3 failed. Check file path, MIME (audio/mpeg), CORS, and iPhone ring switch/volume.');
+  }
+}
+document.getElementById('enableAudioBtn').addEventListener('click', async () => {
+  await testBeep();
+  setTimeout(() => {
+    alert('If you still hear nothing on iPhone, toggle the ring/silent switch to RING and raise volume.');
+  }, 0);
+});
+document.getElementById('testMp3Btn').addEventListener('click', async () => {
+  await testMp3File('/zone_sound1.mp3'); // change to a known-existing file
+});
 </script>
 </body>
 </html>
