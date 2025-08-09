@@ -41,14 +41,21 @@
 </head>
 <body>
 
-<div id="sidebar">
-  <h3>Shared Locations</h3>
-  <ul id="peopleList"></ul>
-  <button id="startBtn">▶ Start Simulation</button>
-  <button id="stopBtn">■ Stop Sounds</button>
-  <button id="enableAudioBtn">🔊 Enable Sound</button>
-  <button id="testMp3Btn">▶ Test MP3</button>
-</div>
+  <div id="sidebar">
+    <h3>Shared Locations</h3>
+    
+    <div style="margin-bottom: 15px;">
+      <input id="name" type="text" placeholder="Enter your name" style="width: 100%; padding: 8px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px;" />
+      <button id="shareLocationBtn" style="width: 100%; padding: 8px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">Start Sharing Location</button>
+      <button id="stopSharingBtn" style="width: 100%; padding: 8px; margin-top: 5px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; display: none;">Stop Sharing</button>
+    </div>
+    
+    <ul id="peopleList"></ul>
+    <button id="startBtn">Start Simulation</button>
+    <button id="stopBtn">Stop Sounds</button>
+    <button id="enableAudioBtn">Enable Sound</button>
+    <button id="testMp3Btn">Test MP3</button>
+  </div>
 
 <div id="map"></div>
 <button id="bedrockToggle" class="layerToggle">Bedrock: ON</button>
@@ -190,6 +197,7 @@ function startZoneSound(buffer) {
 /* ---------- MAP / LAYERS / LOGIC ---------- */
 let bedrockZones = [], zoneFlags = [], audioBuffers = [], sources = [];
 let drawnCoords = [], isDrawing = false;
+let watchId = null; // For location sharing
 
 map.on('load', async () => {
   const loadGeo = async (file) => (await fetch(file)).json();
@@ -382,6 +390,52 @@ document.getElementById('testMp3Btn').onclick = async () => {
   el.crossOrigin = 'anonymous';
   try { await el.play(); } catch(e) { console.warn('MP3 test failed', e); }
   setTimeout(() => { try { el.pause(); el.src=''; } catch{} }, 1500);
+};
+
+// Location sharing functionality
+document.getElementById('shareLocationBtn').onclick = () => {
+  const name = document.getElementById('name').value.trim();
+  if (!name) return alert('Enter your name');
+  if (!navigator.geolocation) return alert('Geolocation not supported');
+
+  watchId = navigator.geolocation.watchPosition(pos => {
+    console.log("Sending position:", pos.coords);
+    fetch('/api/geo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        coords: {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude
+        },
+        timestamp: Date.now()
+      })
+    });
+  }, error => {
+    console.error("Geolocation error", error);
+  }, {
+    enableHighAccuracy: true,
+    maximumAge: 1000,
+    timeout: 5000
+  });
+
+  // Update UI
+  document.getElementById('shareLocationBtn').style.display = 'none';
+  document.getElementById('stopSharingBtn').style.display = 'block';
+  document.getElementById('name').disabled = true;
+};
+
+document.getElementById('stopSharingBtn').onclick = () => {
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    
+    // Update UI
+    document.getElementById('shareLocationBtn').style.display = 'block';
+    document.getElementById('stopSharingBtn').style.display = 'none';
+    document.getElementById('name').disabled = false;
+  }
 };
 
 function stopAllSounds() {
