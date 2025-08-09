@@ -46,8 +46,7 @@
   <ul id="peopleList"></ul>
   <button id="startBtn">▶ Start Simulation</button>
   <button id="stopBtn">■ Stop Sounds</button>
-  <!-- Mobile audio diagnostics -->
-  <button id="enableAudioBtn">🔊 Enable Sound / Test Beep</button>
+  <button id="enableAudioBtn">🔊 Enable Sound</button>
   <button id="testMp3Btn">▶ Test MP3</button>
 </div>
 
@@ -74,35 +73,68 @@ let masterGain = null;
 const playingSources = new Set();
 const MAX_SIMULTANEOUS = 6; // tweak for your phone
 
-async function ensureAudioUnlocked() {
+function createContextIfNeeded() {
   if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({latencyHint: 'interactive'});
     masterGain = audioCtx.createGain();
     masterGain.gain.value = 1.0;
     masterGain.connect(audioCtx.destination);
   }
+}
+
+async function ensureAudioUnlocked() {
+  createContextIfNeeded();
   if (audioCtx.state === 'suspended') {
     try { await audioCtx.resume(); } catch {}
   }
   return audioCtx.state;
 }
 
-// One-time unlock for iOS (first touch or click)
-function oneTimeUnlock() {
-  ensureAudioUnlocked().finally(() => {
-    window.removeEventListener('touchstart', oneTimeUnlock, true);
-    window.removeEventListener('click', oneTimeUnlock, true);
-  });
-}
-window.addEventListener('touchstart', oneTimeUnlock, true);
-window.addEventListener('click', oneTimeUnlock, true);
+// Strong unlock: route a real <audio> element through the AudioContext, plus a short beep.
+// Must run directly inside a user gesture (the Enable Sound button).
+async function strongUnlock() {
+  createContextIfNeeded();
 
-// Resume when tab returns to foreground
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && audioCtx && audioCtx.state === 'suspended') {
-    audioCtx.resume();
+  // 1) Real media element (quiet) routed into the context
+  const el = document.createElement('audio');
+  el.src = '/zone_sound1.mp3';        // use a small/known-valid mp3 that exists on your server
+  el.crossOrigin = 'anonymous';
+  el.preload = 'auto';
+  el.loop = false;
+  el.playsInline = true;
+  el.muted = false;
+  el.volume = 0.05;
+  document.body.appendChild(el);
+
+  try {
+    const node = audioCtx.createMediaElementSource(el);
+    node.connect(masterGain); // goes into the context graph
+    await el.play();          // start playback (quiet)
+  } catch (e) {
+    console.warn('MediaElement unlock failed:', e);
   }
-});
+
+  // 2) Short WebAudio beep
+  try {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0.15;
+    osc.frequency.value = 880;
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.start();
+    setTimeout(() => { try { osc.stop(); } catch {} }, 150);
+  } catch (e) {
+    console.warn('Oscillator unlock failed:', e);
+  }
+
+  // Stop and clean up the element after a moment
+  setTimeout(() => {
+    try { el.pause(); } catch {}
+    el.src = '';
+    el.remove();
+  }, 1200);
+}
 
 // Decode queue to avoid spikes on mobile
 const decodeQueue = [];
@@ -122,7 +154,7 @@ async function processDecodeQueue() {
     const res = await fetch(url, { cache: 'force-cache' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const buf = await res.arrayBuffer();
-    await ensureAudioUnlocked();
+    createContextIfNeeded();
     const audioBuffer = await audioCtx.decodeAudioData(buf);
     resolve(audioBuffer);
   } catch (e) {
@@ -135,11 +167,10 @@ async function processDecodeQueue() {
 }
 
 async function loadSound(url) {
-  await ensureAudioUnlocked();
+  createContextIfNeeded();
   return loadSoundQueued(url);
 }
 
-// Start a zone sound with a polyphony cap
 function startZoneSound(buffer) {
   if (!buffer) return null;
   if (playingSources.size >= MAX_SIMULTANEOUS) {
@@ -247,7 +278,6 @@ async function updateMap() {
       peopleList.appendChild(li);
     });
 
-    // Check each person's location for sound zones
     data.features.forEach(feature => {
       if (feature?.geometry?.coordinates) {
         const coords = feature.geometry.coordinates;
@@ -328,8 +358,9 @@ async function updateSimulation() {
 }
 
 // Controls
-document.getElementById('startBtn').onclick = async () => {
-  await ensureAudioUnlocked();
+document.getElementById('startBtn').onclick = async (e) => {
+  // Make sure we unlock immediately on this gesture:
+  await strongUnlock();
   setInterval(() => {
     updateSimulation();
     updateMap();
@@ -338,6 +369,19 @@ document.getElementById('startBtn').onclick = async () => {
 
 document.getElementById('stopBtn').onclick = () => {
   stopAllSounds();
+};
+
+document.getElementById('enableAudioBtn').onclick = async () => {
+  await strongUnlock();
+  alert('Sound enabled. If you still hear nothing on iPhone, flip the ring/silent switch to RING and raise volume.');
+};
+
+document.getElementById('testMp3Btn').onclick = async () => {
+  const el = new Audio('/zone_sound1.mp3'); // change if needed
+  el.playsInline = true;
+  el.crossOrigin = 'anonymous';
+  try { await el.play(); } catch(e) { console.warn('MP3 test failed', e); }
+  setTimeout(() => { try { el.pause(); el.src=''; } catch{} }, 1500);
 };
 
 function stopAllSounds() {
@@ -365,46 +409,6 @@ function toggleLayer(id, btnId, label) {
 document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 'bedrockToggle', 'Bedrock');
 document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
 document.getElementById('v3Toggle').onclick = () => toggleLayer('v3layer', 'v3Toggle', 'V3');
-
-/* ---------- Mobile diagnostics: Beep + Test MP3 ---------- */
-async function testBeep() {
-  const state = await ensureAudioUnlocked();
-  console.log('AudioContext state:', state);
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  gain.gain.value = 0.2;
-  osc.frequency.value = 880;
-  osc.connect(gain);
-  gain.connect(masterGain || audioCtx.destination);
-  osc.start();
-  setTimeout(() => { try { osc.stop(); } catch {} }, 200);
-}
-async function testMp3File(url) {
-  await ensureAudioUnlocked();
-  const el = new Audio();
-  el.src = url;
-  el.preload = 'auto';
-  el.loop = false;
-  el.crossOrigin = 'anonymous';
-  el.playsInline = true;
-  try {
-    await el.play();
-    console.log('MP3 started:', url);
-    setTimeout(() => { el.pause(); el.src = ''; }, 1500);
-  } catch (err) {
-    console.warn('MP3 failed to play:', url, err);
-    alert('Test MP3 failed. Check file path, MIME (audio/mpeg), CORS, and iPhone ring switch/volume.');
-  }
-}
-document.getElementById('enableAudioBtn').addEventListener('click', async () => {
-  await testBeep();
-  setTimeout(() => {
-    alert('If you still hear nothing on iPhone, toggle the ring/silent switch to RING and raise volume.');
-  }, 0);
-});
-document.getElementById('testMp3Btn').addEventListener('click', async () => {
-  await testMp3File('/zone_sound1.mp3'); // change to a known-existing file
-});
 </script>
 </body>
 </html>
