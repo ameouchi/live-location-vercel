@@ -36,6 +36,7 @@
     #drawBtn { left: 580px; }
     #clearBtn { left: 680px; }
     .hint { font-size:12px; color:#666; margin-top:6px; }
+    .state { font-size:12px; color:#333; margin-top:6px; }
   </style>
 </head>
 <body>
@@ -64,6 +65,7 @@
         <button id="testMp3Btn" class="ghost">Test MP3</button>
       </div>
       <div class="hint">On iPhone, flip the ring/silent switch to <b>Ring</b> and raise volume.</div>
+      <div id="ctxState" class="state">Audio: (not started)</div>
     </div>
 
     <div class="group">
@@ -89,15 +91,23 @@ const map = new mapboxgl.Map({
   zoom: 16
 });
 
-/* ---------- MOBILE-FRIENDLY AUDIO + CLICK-FREE FADE ENVELOPES ---------- */
+/* ---------- AUDIO (mobile-friendly) ---------- */
 let audioCtx = null;
 let masterGain = null;
+let keepAliveNode = null;   // ConstantSource to keep context active
+let keepAliveGain = null;
 const playingSources = new Set();
 const MAX_SIMULTANEOUS = 6;
 
-// anti-click envelope
-const FADE_MS = 200;     // try 200–300 on mobile
-const TARGET_GAIN = 1.0; // per-zone target gain
+const FADE_MS = 220;     // slightly longer on mobile
+const TARGET_GAIN = 1.0;
+
+const ctxStateEl = document.getElementById('ctxState');
+
+function updateCtxState() {
+  if (!audioCtx) { ctxStateEl.textContent = 'Audio: (not started)'; return; }
+  ctxStateEl.textContent = `Audio: ${audioCtx.state}`;
+}
 
 function createContextIfNeeded() {
   if (!audioCtx) {
@@ -105,16 +115,32 @@ function createContextIfNeeded() {
     masterGain = audioCtx.createGain();
     masterGain.gain.value = 1.0;
     masterGain.connect(audioCtx.destination);
+
+    // keep-alive (silent)
+    keepAliveGain = audioCtx.createGain();
+    keepAliveGain.gain.value = 0.0;
+    keepAliveGain.connect(masterGain);
+
+    keepAliveNode = audioCtx.createConstantSource();
+    keepAliveNode.offset.value = 0.0;
+    keepAliveNode.connect(keepAliveGain);
+    keepAliveNode.start();
+
+    audioCtx.onstatechange = updateCtxState;
+    updateCtxState();
   }
 }
 async function ensureAudioUnlocked() {
   createContextIfNeeded();
-  if (audioCtx.state === 'suspended') { try { await audioCtx.resume(); } catch {} }
+  if (audioCtx.state === 'suspended') {
+    try { await audioCtx.resume(); } catch {}
+  }
+  updateCtxState();
   return audioCtx.state;
 }
 async function strongUnlock() {
   createContextIfNeeded();
-  // route a real media element quietly through the context
+  // real media element through the graph (quiet)
   const el = document.createElement('audio');
   el.src = '/zone_sound1.mp3';
   el.crossOrigin = 'anonymous';
@@ -140,8 +166,14 @@ async function strongUnlock() {
     osc.start();
     setTimeout(() => { try { osc.stop(); } catch {} }, 150);
   } catch (e) { console.warn('Oscillator unlock failed:', e); }
-  setTimeout(() => { try { el.pause(); } catch {} el.src = ''; el.remove(); }, 1200);
+  setTimeout(() => { try { el.pause(); } catch {} el.src = ''; el.remove(); updateCtxState(); }, 1200);
 }
+// auto-resume hooks (helps when iOS tries to suspend again)
+window.addEventListener('touchstart', ensureAudioUnlocked, true);
+window.addEventListener('click', ensureAudioUnlocked, true);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && audioCtx && audioCtx.state === 'suspended') audioCtx.resume().then(updateCtxState);
+});
 
 // decode queue
 const decodeQueue = [];
@@ -165,24 +197,22 @@ async function processDecodeQueue() {
 }
 async function loadSound(url) { createContextIfNeeded(); return loadSoundQueued(url); }
 
-// per-zone fade architecture
-let zoneGains = []; // GainNode per zone (index-aligned with bedrockZones)
+/* per-zone envelope */
+let zoneGains = []; // GainNode per zone
 
 function startZoneSoundWithFade(i, buffer) {
   if (!buffer) return null;
 
-  // polyphony cap
   if (playingSources.size >= MAX_SIMULTANEOUS) {
     const oldest = playingSources.values().next().value;
     try { oldest.stop(0); oldest.disconnect(); } catch {}
     playingSources.delete(oldest);
   }
 
-  // per-zone gain
   if (!zoneGains[i]) {
     zoneGains[i] = audioCtx.createGain();
     zoneGains[i].gain.value = 0;
-    zoneGains[i].connect(masterGain || audioCtx.destination);
+    zoneGains[i].connect(masterGain);
   }
   const g = zoneGains[i];
 
@@ -191,7 +221,6 @@ function startZoneSoundWithFade(i, buffer) {
   src.loop = true;
   src.connect(g);
 
-  // smooth fade-in
   const now = audioCtx.currentTime;
   try {
     g.gain.cancelScheduledValues(now);
@@ -203,22 +232,18 @@ function startZoneSoundWithFade(i, buffer) {
   playingSources.add(src);
   return src;
 }
-
 function fadeOutAndStop(i) {
   const src = sources[i];
   const g   = zoneGains[i];
   if (!src || !g) return;
-
   const now = audioCtx.currentTime;
   try {
     g.gain.cancelScheduledValues(now);
     g.gain.setValueAtTime(g.gain.value, now);
     g.gain.linearRampToValueAtTime(0, now + FADE_MS / 1000);
   } catch {}
-
   const stopAt = now + (FADE_MS / 1000) + 0.02;
   try { src.stop(stopAt); } catch {}
-
   src.onended = () => {
     try { src.disconnect(); } catch {}
     playingSources.delete(src);
@@ -227,9 +252,13 @@ function fadeOutAndStop(i) {
   };
 }
 
-/* ---------- MAP / DATA / SOUND LOGIC ---------- */
+/* ---------- MAP / DATA / LOGIC ---------- */
 let bedrockZones = [], zoneFlags = [], audioBuffers = [], sources = [];
 let drawnCoords = [], isDrawing = false;
+
+// Hysteresis (avoid stop/start from GPS wobble)
+const HYSTERESIS_MS = 1500;
+const lastInsideAt = [];   // timestamp (ms) per zone
 
 map.on('load', async () => {
   const loadGeo = async (file) => (await fetch(file)).json();
@@ -245,6 +274,7 @@ map.on('load', async () => {
   zoneFlags   = new Array(bedrockZones.length).fill(false);
   sources     = new Array(bedrockZones.length).fill(null);
   zoneGains   = new Array(bedrockZones.length).fill(null);
+  for (let i=0;i<bedrockZones.length;i++) lastInsideAt[i]=0;
 
   map.addSource('bedrock', { type: 'geojson', data: bedrock });
   map.addLayer({
@@ -286,7 +316,7 @@ map.on('load', async () => {
 // Live data + people list + zone checks
 async function updateMap() {
   try {
-    const res = await fetch('/api/geo');
+    const res = await fetch('/api/geo', { cache: 'no-store' });
     const data = await res.json();
     map.getSource('live-lines').setData(data);
 
@@ -323,24 +353,31 @@ document.getElementById('clearBtn').onclick = () => {
 };
 
 async function checkSoundZones(pt) {
+  const nowMs = Date.now();
   for (let i = 0; i < bedrockZones.length; i++) {
     const feature = bedrockZones[i];
     const polygon = turf.polygon(feature.geometry.coordinates);
     const isInside = turf.booleanPointInPolygon(pt, polygon);
 
-    if (isInside && !zoneFlags[i]) {
-      if (!audioBuffers[i]) {
-        const dn = feature.properties.DN;
-        const soundPath = `/zone_sound${dn}.mp3`;
-        audioBuffers[i] = await loadSound(soundPath);
+    if (isInside) {
+      lastInsideAt[i] = nowMs; // mark inside time
+      if (!zoneFlags[i]) {
+        if (!audioBuffers[i]) {
+          const dn = feature.properties.DN;
+          const soundPath = `/zone_sound${dn}.mp3`;
+          audioBuffers[i] = await loadSound(soundPath);
+        }
+        if (audioBuffers[i]) {
+          const src = startZoneSoundWithFade(i, audioBuffers[i]);
+          if (src) { sources[i] = src; zoneFlags[i] = true; }
+        }
       }
-      if (audioBuffers[i]) {
-        const src = startZoneSoundWithFade(i, audioBuffers[i]);
-        if (src) { sources[i] = src; zoneFlags[i] = true; }
+    } else {
+      // only stop if outside long enough (hysteresis)
+      if (zoneFlags[i] && (nowMs - lastInsideAt[i] > HYSTERESIS_MS)) {
+        if (sources[i]) fadeOutAndStop(i);
+        zoneFlags[i] = false;
       }
-    } else if (!isInside && zoneFlags[i]) {
-      if (sources[i]) fadeOutAndStop(i);
-      zoneFlags[i] = false;
     }
   }
 }
@@ -354,14 +391,17 @@ async function updateSimulation() {
 // Controls
 document.getElementById('startBtn').onclick = async () => {
   await strongUnlock();
-  setInterval(() => { updateSimulation(); updateMap(); }, 1200);
+  updateCtxState();
+  setInterval(() => { updateSimulation(); updateMap(); }, 1500); // slightly slower = fewer toggles
 };
 document.getElementById('stopBtn').onclick = () => stopAllSounds();
 document.getElementById('enableAudioBtn').onclick = async () => {
   await strongUnlock();
+  updateCtxState();
   alert('Sound enabled. If silent on iPhone, set ring switch to RING and raise volume.');
 };
 document.getElementById('testMp3Btn').onclick = async () => {
+  await ensureAudioUnlocked();
   const el = new Audio('/zone_sound1.mp3');
   el.playsInline = true; el.crossOrigin = 'anonymous';
   try { await el.play(); } catch(e) { console.warn('MP3 test failed', e); }
@@ -369,19 +409,17 @@ document.getElementById('testMp3Btn').onclick = async () => {
 };
 
 function stopAllSounds() {
-  // fade out active zones
   for (let i = 0; i < sources.length; i++) {
     if (sources[i]) fadeOutAndStop(i);
     zoneFlags[i] = false;
   }
-  // safety drain
   for (const src of Array.from(playingSources)) {
     try { src.stop(0); src.disconnect(); } catch {}
     playingSources.delete(src);
   }
 }
 
-// Toggle layer visibility
+/* ---------- LAYER TOGGLES ---------- */
 function toggleLayer(id, btnId, label) {
   const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
   const newVis = vis === 'visible' ? 'none' : 'visible';
@@ -392,7 +430,7 @@ document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 
 document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
 document.getElementById('v3Toggle').onclick = () => toggleLayer('v3layer', 'v3Toggle', 'V3');
 
-/* ---------- LOCATION SHARING (ROBUST) ---------- */
+/* ---------- LOCATION SHARING ---------- */
 const nameInput = document.getElementById('name');
 const shareBtn  = document.getElementById('shareLocationBtn');
 const stopShareBtn = document.getElementById('stopSharingBtn');
