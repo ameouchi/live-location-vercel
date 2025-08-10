@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Map – iOS-stable WebAudio Zones</title>
+  <title>Map – Simulation & Layers (iOS-safe WebAudio)</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.js"></script>
@@ -32,14 +32,6 @@
     #drawBtn{ left:580px; }
     #clearBtn{ left:680px; }
     #ctxState{ font-size:12px; color:#555; margin-left:6px; }
-    /* mobile tap overlay to ensure first user gesture */
-    #tapOverlay{
-      position:fixed; inset:0; display:none; align-items:center; justify-content:center;
-      background:rgba(255,255,255,.96); z-index:1000; text-align:center; padding:24px;
-    }
-    #tapOverlay .card{ background:#fff; border:1px solid #ddd; border-radius:12px; padding:18px 16px; max-width:320px; }
-    #tapOverlay h4{ margin:0 0 8px; }
-    #tapOverlay p{ margin:0 0 12px; font-size:14px; color:#444; }
   </style>
 </head>
 <body>
@@ -65,9 +57,9 @@
       </div>
       <div class="row" style="margin-top:8px;">
         <button id="enableAudioBtn" class="ghost">🔊 Enable Sound</button>
-        <button id="testMp3Btn" class="ghost">Test Sound</button>
+        <button id="testMp3Btn" class="ghost">Test MP3</button>
       </div>
-      <div class="hint">On iPhone, prefer AAC (.m4a). WebAudio should play even in Silent, but volume still matters.</div>
+      <div class="hint">On iPhone, flip the ring/silent switch to <b>Ring</b> and raise volume.</div>
     </div>
 
     <div class="group">
@@ -83,18 +75,10 @@
   <button id="drawBtn" class="drawBtn">Draw Line</button>
   <button id="clearBtn" class="drawBtn">Clear</button>
 
-  <!-- First-tap overlay for mobile -->
-  <div id="tapOverlay">
-    <div class="card">
-      <h4>Tap to Enable Audio</h4>
-      <p>iOS needs one tap to start sounds. You’ll only do this once.</p>
-      <button id="tapUnlock" class="primary" style="width:100%;">Enable</button>
-    </div>
-  </div>
-
 <script>
 /* ---------------- MAPBOX INIT ---------------- */
 mapboxgl.accessToken = 'pk.eyJ1IjoibGFtZW91Y2hpIiwiYSI6ImNsa3ZqdHZtMDBjbTQzcXBpNzRyc2ljNGsifQ.287002jl7xT9SBub-dbBbQ';
+
 const map = new mapboxgl.Map({
   container: 'map',
   style: 'mapbox://styles/lameouchi/cme04okvl00be01rydkfj6r43',
@@ -107,19 +91,20 @@ let audioCtx = null, masterGain = null;
 const playingSources = new Set(); // holds {src, gain}
 const MAX_SIMULTANEOUS = 6;
 let interactionBound = false;
-const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 function updateCtxBadge() {
   const el = document.getElementById('ctxState');
   if (el && audioCtx) el.textContent = `Audio: ${audioCtx.state}`;
 }
+
 function createContextIfNeeded() {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
     masterGain = audioCtx.createGain();
     masterGain.gain.value = 1.0;
     masterGain.connect(audioCtx.destination);
-    // keep-alive
+
+    // Inaudible keep-alive that actually reaches DAC (helps Safari stay "running")
     const keepAliveOsc = audioCtx.createOscillator();
     const keepAliveGain = audioCtx.createGain();
     keepAliveOsc.type = 'sine';
@@ -127,6 +112,7 @@ function createContextIfNeeded() {
     keepAliveGain.gain.value = 0.0003;
     keepAliveOsc.connect(keepAliveGain).connect(masterGain);
     try { keepAliveOsc.start(); } catch {}
+
     audioCtx.onstatechange = updateCtxBadge;
     updateCtxBadge();
   }
@@ -139,19 +125,35 @@ async function ensureAudioUnlocked() {
   updateCtxBadge();
   return audioCtx.state;
 }
-// Strong unlock: real <audio> + beep + brief auto-resume loop
+
+// One-time global unlock on the very first user interaction anywhere
+function bindFirstInteractionUnlock() {
+  if (interactionBound) return;
+  interactionBound = true;
+  const onceUnlock = async () => {
+    document.removeEventListener('pointerdown', onceUnlock);
+    document.removeEventListener('touchend', onceUnlock);
+    await strongUnlock();
+  };
+  document.addEventListener('pointerdown', onceUnlock, { once: true });
+  document.addEventListener('touchend', onceUnlock, { once: true });
+}
+// bind immediately
+bindFirstInteractionUnlock();
+
+// Strong unlock sequence: play a tiny real <audio>, beep via WebAudio, and briefly auto-resume
 async function strongUnlock() {
   createContextIfNeeded();
 
-  // Real media element (prefer AAC for iOS)
+  // 1) Real media element
   const el = document.createElement('audio');
-  el.src = '/zone_sound1.m4a'; // fallback to .mp3 if needed
+  el.src = '/zone_sound1.mp3';  // must exist; serve as Content-Type: audio/mpeg
   el.preload = 'auto';
   el.crossOrigin = 'anonymous';
   el.playsInline = true;
   el.controls = false;
   el.muted = false;
-  el.volume = 0.02;
+  el.volume = 0.01;
   document.body.appendChild(el);
 
   try {
@@ -162,7 +164,7 @@ async function strongUnlock() {
     console.warn('MediaElement unlock failed:', e);
   }
 
-  // Short beep
+  // 2) Short WebAudio beep
   try {
     const osc = audioCtx.createOscillator();
     const g = audioCtx.createGain();
@@ -175,11 +177,13 @@ async function strongUnlock() {
     console.warn('Oscillator unlock failed:', e);
   }
 
-  // Brief resume loop (~2s)
+  // 3) Keep resuming for ~2s (some iOS Safari builds re-suspend immediately)
   const t0 = performance.now();
   const tick = async () => {
     if (!audioCtx) return;
-    if (audioCtx.state !== 'running') { try { await audioCtx.resume(); } catch {} }
+    if (audioCtx.state !== 'running') {
+      try { await audioCtx.resume(); } catch {}
+    }
     updateCtxBadge();
     if (performance.now() - t0 < 2000) requestAnimationFrame(tick);
   };
@@ -187,34 +191,15 @@ async function strongUnlock() {
 
   setTimeout(() => { try { el.pause(); } catch{} el.src=''; el.remove(); }, 1500);
 }
-// Bind first interaction anywhere; on iOS show overlay to guide user
-function bindFirstInteractionUnlock() {
-  if (interactionBound) return;
-  interactionBound = true;
 
-  const onceUnlock = async () => {
-    document.removeEventListener('pointerdown', onceUnlock);
-    document.removeEventListener('touchend', onceUnlock);
-    await strongUnlock();
-    hideTapOverlay();
-  };
-
-  if (isIOS) showTapOverlay();
-  document.addEventListener('pointerdown', onceUnlock, { once: true });
-  document.addEventListener('touchend', onceUnlock, { once: true });
-}
-function showTapOverlay(){ document.getElementById('tapOverlay').style.display = 'flex'; }
-function hideTapOverlay(){ document.getElementById('tapOverlay').style.display = 'none'; }
-document.getElementById('tapUnlock').onclick = async () => { await strongUnlock(); hideTapOverlay(); };
-
-// start binding immediately
-bindFirstInteractionUnlock();
-
-/* ---------- Decode queue ---------- */
+/* ---------- Decode queue to avoid mobile stalls ---------- */
 const decodeQueue = [];
 let decoding = false;
 function loadSoundQueued(url) {
-  return new Promise((resolve) => { decodeQueue.push({ url, resolve }); processDecodeQueue(); });
+  return new Promise((resolve) => {
+    decodeQueue.push({ url, resolve });
+    processDecodeQueue();
+  });
 }
 async function processDecodeQueue() {
   if (decoding || decodeQueue.length === 0) return;
@@ -237,11 +222,12 @@ async function processDecodeQueue() {
 }
 async function loadSound(url) { createContextIfNeeded(); return loadSoundQueued(url); }
 
-/* ---------- Start/stop with per-sound fades + explicit loops ---------- */
+/* ---------- Start/stop with per-sound fades ---------- */
 function startZoneSound(buffer) {
   if (!buffer) return null;
 
   if (playingSources.size >= MAX_SIMULTANEOUS) {
+    // Stop oldest
     const oldest = playingSources.values().next().value;
     try { oldest.src.stop(0); oldest.src.disconnect(); oldest.gain.disconnect(); } catch {}
     playingSources.delete(oldest);
@@ -249,15 +235,11 @@ function startZoneSound(buffer) {
 
   const src = audioCtx.createBufferSource();
   const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0, audioCtx.currentTime);
+  g.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.15); // fade in
 
   src.buffer = buffer;
   src.loop = true;
-  src.loopStart = 0;
-  src.loopEnd = buffer.duration;
-
-  g.gain.setValueAtTime(0, audioCtx.currentTime);
-  g.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.2);
-
   src.connect(g).connect(masterGain || audioCtx.destination);
   src.start(0);
 
@@ -270,12 +252,13 @@ function stopHandle(handle) {
   try {
     const now = audioCtx.currentTime;
     handle.gain.gain.cancelScheduledValues(now);
-    handle.gain.gain.setValueAtTime(handle.gain.gain.value, now);
-    handle.gain.gain.linearRampToValueAtTime(0, now + 0.15);
+    const current = handle.gain.gain.value;
+    handle.gain.gain.setValueAtTime(current, now);
+    handle.gain.gain.linearRampToValueAtTime(0, now + 0.12); // fade out
     setTimeout(() => {
       try { handle.src.stop(0); handle.src.disconnect(); handle.gain.disconnect(); } catch {}
       playingSources.delete(handle);
-    }, 170);
+    }, 130);
   } catch {}
 }
 function stopAllSounds() {
@@ -283,20 +266,8 @@ function stopAllSounds() {
 }
 
 /* ---------------- MAP / DATA / SOUND ---------------- */
-let bedrockZones = [];
-let zoneGeoms = [];       // original geometries (Polygon/MultiPolygon)
-let innerGeoms = [];      // shrunken geometries (enter threshold)
-let outerGeoms = [];      // expanded geometries (exit threshold)
-let outsideCount = [];    // debounce counters
-let zoneFlags = [];       // active state
-let audioBuffers = [];    // decoded buffers
-let sources = [];         // {src,gain}
+let bedrockZones = [], zoneFlags = [], audioBuffers = [], sources = [];
 let drawnCoords = [], isDrawing = false;
-
-// Hysteresis distances (meters). Tune for your map scale.
-const ENTER_SHRINK_M = 2;  // must be inside this to (re)start
-const EXIT_EXPAND_M  = 2;  // must be outside this to stop
-const EXIT_DEBOUNCE_TICKS = 3; // with 1.2s tick ~ 3.6s
 
 map.on('load', async () => {
   const loadGeo = async (file) => (await fetch(file)).json();
@@ -304,37 +275,13 @@ map.on('load', async () => {
   // Bedrock
   const bedrock = await loadGeo('bedrock_depth_vector.geojson');
   bedrockZones = bedrock.features || [];
-
-  zoneGeoms   = bedrockZones.map(f => {
-    if (f.geometry.type === 'Polygon') return turf.polygon(f.geometry.coordinates);
-    if (f.geometry.type === 'MultiPolygon') return turf.multiPolygon(f.geometry.coordinates);
-    return null;
-  });
-
-  // Precompute inner/outer hysteresis buffers (fallback to original if shrink eliminates geometry)
-  innerGeoms = zoneGeoms.map(g => {
-    if (!g) return null;
-    try {
-      const inner = turf.buffer(g, -ENTER_SHRINK_M, { units:'meters', steps:8 });
-      if (!inner || !inner.geometry || (inner.geometry.coordinates?.length ?? 0) === 0) return g;
-      return inner;
-    } catch { return g; }
-  });
-  outerGeoms = zoneGeoms.map(g => {
-    if (!g) return null;
-    try { return turf.buffer(g, EXIT_EXPAND_M, { units:'meters', steps:8 }); }
-    catch { return g; }
-  });
-
-  outsideCount = new Array(bedrockZones.length).fill(0);
-  zoneFlags    = new Array(bedrockZones.length).fill(false);
-  audioBuffers = new Array(bedrockZones.length).fill(null);
-  sources      = new Array(bedrockZones.length).fill(null);
-
-  // Color breaks
   const dns = bedrockZones.map(f => f?.properties?.DN).filter(Number.isFinite);
   const [min, max] = [Math.min(...dns), Math.max(...dns)];
   const mid = (min + max) / 2;
+
+  audioBuffers = new Array(bedrockZones.length).fill(null);
+  zoneFlags   = new Array(bedrockZones.length).fill(false);
+  sources     = new Array(bedrockZones.length).fill(null);
 
   map.addSource('bedrock', { type:'geojson', data: bedrock });
   map.addLayer({
@@ -365,49 +312,35 @@ map.on('load', async () => {
             'fill-opacity':0.4, 'fill-outline-color':'#000' }
   });
 
-  // Live line
+  // Live line (drawn + live people)
   map.addSource('live-lines', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
   map.addLayer({ id:'live-lines', type:'line', source:'live-lines',
     paint:{ 'line-color':'#FF0000', 'line-width':4 } });
 
-  if (bedrock.features?.length) map.fitBounds(turf.bbox(bedrock), { padding:20 });
+  if (bedrock.features?.length) {
+    map.fitBounds(turf.bbox(bedrock), { padding:20 });
+  }
 });
 
-/* ---------------- Robust zone checks w/ hysteresis + debounce ---------------- */
+/* ---------------- Zone checks ---------------- */
 async function checkSoundZones(pt) {
   for (let i = 0; i < bedrockZones.length; i++) {
-    const inner = innerGeoms[i], outer = outerGeoms[i];
-    if (!inner || !outer) continue;
+    const feature = bedrockZones[i];
+    const polygon = turf.polygon(feature.geometry.coordinates);
+    const isInside = turf.booleanPointInPolygon(pt, polygon);
 
-    const insideInner = turf.booleanPointInPolygon(pt, inner, { ignoreBoundary:false });
-    const insideOuter = turf.booleanPointInPolygon(pt, outer, { ignoreBoundary:false });
-
-    if (insideInner) {
-      // definitely inside → play (and reset debounce)
-      outsideCount[i] = 0;
-      if (!zoneFlags[i]) {
-        if (!audioBuffers[i]) {
-          const dn = bedrockZones[i].properties.DN;
-          // Prefer AAC for iOS if available:
-          audioBuffers[i] = await loadSound(`/zone_sound${dn}.m4a`).then(b => b || loadSound(`/zone_sound${dn}.mp3`));
-        }
-        if (audioBuffers[i]) {
-          const handle = startZoneSound(audioBuffers[i]);
-          if (handle) { sources[i] = handle; zoneFlags[i] = true; }
-        }
+    if (isInside && !zoneFlags[i]) {
+      if (!audioBuffers[i]) {
+        const dn = feature.properties.DN;
+        audioBuffers[i] = await loadSound(`/zone_sound${dn}.mp3`);
       }
-    } else if (!insideOuter) {
-      // definitely outside → stop, but only after N ticks
-      if (zoneFlags[i]) {
-        outsideCount[i] += 1;
-        if (outsideCount[i] >= EXIT_DEBOUNCE_TICKS) {
-          if (sources[i]) { stopHandle(sources[i]); sources[i] = null; }
-          zoneFlags[i] = false;
-        }
+      if (audioBuffers[i]) {
+        const handle = startZoneSound(audioBuffers[i]);
+        if (handle) { sources[i] = handle; zoneFlags[i] = true; }
       }
-    } else {
-      // in the "band" between inner and outer → keep current state, reset debounce
-      outsideCount[i] = 0;
+    } else if (!isInside && zoneFlags[i]) {
+      if (sources[i]) { stopHandle(sources[i]); sources[i] = null; }
+      zoneFlags[i] = false;
     }
   }
 }
@@ -428,7 +361,7 @@ async function updateMap() {
       const li = document.createElement('li'); li.textContent = name; peopleList.appendChild(li);
     });
 
-    // Zone checks for last point of each feature
+    // Zone checks (each last point)
     (data.features||[]).forEach(feature => {
       const coords = feature?.geometry?.coordinates;
       if (coords && coords.length) {
@@ -470,10 +403,9 @@ let mainTimer = null;
 
 document.getElementById('startBtn').onclick = async () => {
   await strongUnlock();
-  // Pre-warm a few common sounds
-  ['/zone_sound1.m4a','/zone_sound2.m4a','/zone_sound3.m4a'].forEach(url => {
-    loadSound(url).catch(()=>{});
-  });
+
+  // Optional: pre-warm a few sounds to avoid first-hit lag
+  ['/zone_sound1.mp3','/zone_sound2.mp3','/zone_sound3.mp3'].forEach(url => loadSound(url));
 
   if (mainTimer) return; // already running
   let lastResume = 0;
@@ -494,19 +426,18 @@ document.getElementById('startBtn').onclick = async () => {
 document.getElementById('stopBtn').onclick = () => {
   stopAllSounds();
   if (mainTimer) { clearInterval(mainTimer); mainTimer = null; }
-  // Optional: audioCtx?.suspend();
+  // Optionally: audioCtx?.suspend(); // battery saver
 };
 
 document.getElementById('enableAudioBtn').onclick = async () => {
   await strongUnlock();
-  alert('Audio enabled. If you still hear nothing, raise volume.');
+  alert('Sound enabled. If still silent on iPhone, set ring switch to RING and raise volume.');
 };
 
 document.getElementById('testMp3Btn').onclick = async () => {
-  // Use <audio> for a quick sanity-check on iOS
-  const el = new Audio('/zone_sound1.m4a');
+  const el = new Audio('/zone_sound1.mp3');
   el.playsInline = true; el.crossOrigin = 'anonymous';
-  try { await el.play(); } catch(e) { console.warn('Sound test failed', e); }
+  try { await el.play(); } catch(e) { console.warn('MP3 test failed', e); }
   setTimeout(() => { try { el.pause(); el.src=''; } catch{} }, 1500);
 };
 
@@ -521,7 +452,7 @@ document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 
 document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
 document.getElementById('v3Toggle').onclick = () => toggleLayer('v3layer', 'v3Toggle', 'V3');
 
-/* ---------------- Location sharing ---------------- */
+/* ---------------- Location sharing (robust) ---------------- */
 const nameInput = document.getElementById('name');
 const shareBtn  = document.getElementById('shareLocationBtn');
 const stopShareBtn = document.getElementById('stopSharingBtn');
