@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Map – Simulation & Layers</title>
+  <title>Map – Simulation & Layers (iOS-safe WebAudio)</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.js"></script>
@@ -76,6 +76,7 @@
   <button id="clearBtn" class="drawBtn">Clear</button>
 
 <script>
+/* ---------------- MAPBOX INIT ---------------- */
 mapboxgl.accessToken = 'pk.eyJ1IjoibGFtZW91Y2hpIiwiYSI6ImNsa3ZqdHZtMDBjbTQzcXBpNzRyc2ljNGsifQ.287002jl7xT9SBub-dbBbQ';
 
 const map = new mapboxgl.Map({
@@ -87,8 +88,9 @@ const map = new mapboxgl.Map({
 
 /* ---------------- AUDIO (iOS-safe) ---------------- */
 let audioCtx = null, masterGain = null;
-const playingSources = new Set();
+const playingSources = new Set(); // holds {src, gain}
 const MAX_SIMULTANEOUS = 6;
+let interactionBound = false;
 
 function updateCtxBadge() {
   const el = document.getElementById('ctxState');
@@ -102,7 +104,7 @@ function createContextIfNeeded() {
     masterGain.gain.value = 1.0;
     masterGain.connect(audioCtx.destination);
 
-    // KEEP-ALIVE: a tiny 30 Hz tone at ~-70 dB that actually reaches the DAC (inaudible)
+    // Inaudible keep-alive that actually reaches DAC (helps Safari stay "running")
     const keepAliveOsc = audioCtx.createOscillator();
     const keepAliveGain = audioCtx.createGain();
     keepAliveOsc.type = 'sine';
@@ -124,42 +126,73 @@ async function ensureAudioUnlocked() {
   return audioCtx.state;
 }
 
-// strong unlock on gesture: real media element + short beep
+// One-time global unlock on the very first user interaction anywhere
+function bindFirstInteractionUnlock() {
+  if (interactionBound) return;
+  interactionBound = true;
+  const onceUnlock = async () => {
+    document.removeEventListener('pointerdown', onceUnlock);
+    document.removeEventListener('touchend', onceUnlock);
+    await strongUnlock();
+  };
+  document.addEventListener('pointerdown', onceUnlock, { once: true });
+  document.addEventListener('touchend', onceUnlock, { once: true });
+}
+// bind immediately
+bindFirstInteractionUnlock();
+
+// Strong unlock sequence: play a tiny real <audio>, beep via WebAudio, and briefly auto-resume
 async function strongUnlock() {
   createContextIfNeeded();
 
+  // 1) Real media element
   const el = document.createElement('audio');
-  el.src = '/zone_sound1.mp3'; // ensure this file exists
-  el.crossOrigin = 'anonymous';
+  el.src = '/zone_sound1.mp3';  // must exist; serve as Content-Type: audio/mpeg
   el.preload = 'auto';
-  el.loop = false;
+  el.crossOrigin = 'anonymous';
   el.playsInline = true;
+  el.controls = false;
   el.muted = false;
-  el.volume = 0.05;
+  el.volume = 0.01;
   document.body.appendChild(el);
 
   try {
     const node = audioCtx.createMediaElementSource(el);
     node.connect(masterGain);
     await el.play();
-  } catch(e){ console.warn('MediaElement unlock failed:', e); }
+  } catch (e) {
+    console.warn('MediaElement unlock failed:', e);
+  }
 
+  // 2) Short WebAudio beep
   try {
     const osc = audioCtx.createOscillator();
     const g = audioCtx.createGain();
-    g.gain.value = 0.15;
+    g.gain.value = 0.08;
     osc.frequency.value = 880;
-    osc.connect(g);
-    g.connect(masterGain);
+    osc.connect(g).connect(masterGain);
     osc.start();
-    setTimeout(() => { try { osc.stop(); } catch{} }, 150);
-  } catch(e){ console.warn('Oscillator unlock failed:', e); }
+    setTimeout(() => { try { osc.stop(); } catch{} }, 120);
+  } catch (e) {
+    console.warn('Oscillator unlock failed:', e);
+  }
 
-  setTimeout(() => { try { el.pause(); } catch{} el.src=''; el.remove(); }, 1200);
-  updateCtxBadge();
+  // 3) Keep resuming for ~2s (some iOS Safari builds re-suspend immediately)
+  const t0 = performance.now();
+  const tick = async () => {
+    if (!audioCtx) return;
+    if (audioCtx.state !== 'running') {
+      try { await audioCtx.resume(); } catch {}
+    }
+    updateCtxBadge();
+    if (performance.now() - t0 < 2000) requestAnimationFrame(tick);
+  };
+  tick();
+
+  setTimeout(() => { try { el.pause(); } catch{} el.src=''; el.remove(); }, 1500);
 }
 
-// decode queue (avoid spikes on mobile)
+/* ---------- Decode queue to avoid mobile stalls ---------- */
 const decodeQueue = [];
 let decoding = false;
 function loadSoundQueued(url) {
@@ -189,20 +222,47 @@ async function processDecodeQueue() {
 }
 async function loadSound(url) { createContextIfNeeded(); return loadSoundQueued(url); }
 
+/* ---------- Start/stop with per-sound fades ---------- */
 function startZoneSound(buffer) {
   if (!buffer) return null;
+
   if (playingSources.size >= MAX_SIMULTANEOUS) {
+    // Stop oldest
     const oldest = playingSources.values().next().value;
-    try { oldest.stop(0); oldest.disconnect(); } catch {}
+    try { oldest.src.stop(0); oldest.src.disconnect(); oldest.gain.disconnect(); } catch {}
     playingSources.delete(oldest);
   }
+
   const src = audioCtx.createBufferSource();
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0, audioCtx.currentTime);
+  g.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.15); // fade in
+
   src.buffer = buffer;
   src.loop = true;
-  src.connect(masterGain || audioCtx.destination);
+  src.connect(g).connect(masterGain || audioCtx.destination);
   src.start(0);
-  playingSources.add(src);
-  return src;
+
+  const handle = { src, gain: g };
+  playingSources.add(handle);
+  return handle;
+}
+function stopHandle(handle) {
+  if (!handle) return;
+  try {
+    const now = audioCtx.currentTime;
+    handle.gain.gain.cancelScheduledValues(now);
+    const current = handle.gain.gain.value;
+    handle.gain.gain.setValueAtTime(current, now);
+    handle.gain.gain.linearRampToValueAtTime(0, now + 0.12); // fade out
+    setTimeout(() => {
+      try { handle.src.stop(0); handle.src.disconnect(); handle.gain.disconnect(); } catch {}
+      playingSources.delete(handle);
+    }, 130);
+  } catch {}
+}
+function stopAllSounds() {
+  for (const h of Array.from(playingSources)) stopHandle(h);
 }
 
 /* ---------------- MAP / DATA / SOUND ---------------- */
@@ -214,8 +274,8 @@ map.on('load', async () => {
 
   // Bedrock
   const bedrock = await loadGeo('bedrock_depth_vector.geojson');
-  bedrockZones = bedrock.features;
-  const dns = bedrockZones.map(f => f.properties.DN).filter(Number.isFinite);
+  bedrockZones = bedrock.features || [];
+  const dns = bedrockZones.map(f => f?.properties?.DN).filter(Number.isFinite);
   const [min, max] = [Math.min(...dns), Math.max(...dns)];
   const mid = (min + max) / 2;
 
@@ -232,7 +292,7 @@ map.on('load', async () => {
 
   // V2
   const v2 = await loadGeo('v2.geojson');
-  const d2 = v2.features.map(f => f.properties.DN).filter(Number.isFinite);
+  const d2 = (v2.features||[]).map(f => f?.properties?.DN).filter(Number.isFinite);
   const [min2, max2] = [Math.min(...d2), Math.max(...d2)];
   map.addSource('v2layer', { type:'geojson', data: v2 });
   map.addLayer({
@@ -243,7 +303,7 @@ map.on('load', async () => {
 
   // V3
   const v3 = await loadGeo('v3.geojson');
-  const d3 = v3.features.map(f => f.properties.DN).filter(Number.isFinite);
+  const d3 = (v3.features||[]).map(f => f?.properties?.DN).filter(Number.isFinite);
   const [min3, max3] = [Math.min(...d3), Math.max(...d3)];
   map.addSource('v3layer', { type:'geojson', data: v3 });
   map.addLayer({
@@ -257,52 +317,12 @@ map.on('load', async () => {
   map.addLayer({ id:'live-lines', type:'line', source:'live-lines',
     paint:{ 'line-color':'#FF0000', 'line-width':4 } });
 
-  map.fitBounds(turf.bbox(bedrock), { padding:20 });
-});
-
-// Pull live data + update list + trigger zones
-async function updateMap() {
-  try {
-    const res = await fetch('/api/geo');
-    const data = await res.json();
-    map.getSource('live-lines').setData(data);
-
-    // People list
-    const peopleList = document.getElementById('peopleList');
-    const names = new Set(data.features.map(f => f.properties?.name).filter(Boolean));
-    peopleList.innerHTML = '';
-    [...names].sort().forEach(name => {
-      const li = document.createElement('li'); li.textContent = name; peopleList.appendChild(li);
-    });
-
-    // Zone checks (each last point)
-    data.features.forEach(feature => {
-      const coords = feature?.geometry?.coordinates;
-      if (coords && coords.length) {
-        const lastCoord = coords[coords.length - 1];
-        const pt = turf.point(lastCoord);
-        checkSoundZones(pt);
-      }
-    });
-  } catch (err) {
-    console.error('Error updating live data', err);
+  if (bedrock.features?.length) {
+    map.fitBounds(turf.bbox(bedrock), { padding:20 });
   }
-}
-
-// Draw tool to manually trigger zones
-map.on('click', (e) => {
-  if (!isDrawing) return;
-  drawnCoords.push([e.lngLat.lng, e.lngLat.lat]);
-  const line = { type:'FeatureCollection', features:[{ type:'Feature', geometry:{ type:'LineString', coordinates: drawnCoords } }] };
-  map.getSource('live-lines').setData(line);
 });
-document.getElementById('drawBtn').onclick = () => { isDrawing = true; drawnCoords = []; };
-document.getElementById('clearBtn').onclick = () => {
-  isDrawing = false; drawnCoords = [];
-  map.getSource('live-lines').setData({ type:'FeatureCollection', features:[] });
-  stopAllSounds();
-};
 
+/* ---------------- Zone checks ---------------- */
 async function checkSoundZones(pt) {
   for (let i = 0; i < bedrockZones.length; i++) {
     const feature = bedrockZones[i];
@@ -315,28 +335,81 @@ async function checkSoundZones(pt) {
         audioBuffers[i] = await loadSound(`/zone_sound${dn}.mp3`);
       }
       if (audioBuffers[i]) {
-        const src = startZoneSound(audioBuffers[i]);
-        if (src) { sources[i] = src; zoneFlags[i] = true; }
+        const handle = startZoneSound(audioBuffers[i]);
+        if (handle) { sources[i] = handle; zoneFlags[i] = true; }
       }
     } else if (!isInside && zoneFlags[i]) {
-      if (sources[i]) { try { sources[i].stop(0); sources[i].disconnect(); } catch {} playingSources.delete(sources[i]); sources[i] = null; }
+      if (sources[i]) { stopHandle(sources[i]); sources[i] = null; }
       zoneFlags[i] = false;
     }
   }
 }
 
+/* ---------------- Live data + list + triggers ---------------- */
+async function updateMap() {
+  try {
+    const res = await fetch('/api/geo');
+    const data = await res.json();
+    const src = map.getSource('live-lines');
+    if (src) src.setData(data);
+
+    // People list
+    const peopleList = document.getElementById('peopleList');
+    const names = new Set((data.features||[]).map(f => f.properties?.name).filter(Boolean));
+    peopleList.innerHTML = '';
+    [...names].sort().forEach(name => {
+      const li = document.createElement('li'); li.textContent = name; peopleList.appendChild(li);
+    });
+
+    // Zone checks (each last point)
+    (data.features||[]).forEach(feature => {
+      const coords = feature?.geometry?.coordinates;
+      if (coords && coords.length) {
+        const lastCoord = coords[coords.length - 1];
+        const pt = turf.point(lastCoord);
+        checkSoundZones(pt);
+      }
+    });
+  } catch (err) {
+    console.error('Error updating live data', err);
+  }
+}
+
+/* ---------------- Draw tool to manually trigger zones ---------------- */
+map.on('click', (e) => {
+  if (!isDrawing) return;
+  drawnCoords.push([e.lngLat.lng, e.lngLat.lat]);
+  const line = { type:'FeatureCollection', features:[{ type:'Feature', geometry:{ type:'LineString', coordinates: drawnCoords } }] };
+  const src = map.getSource('live-lines');
+  if (src) src.setData(line);
+});
+document.getElementById('drawBtn').onclick = () => { isDrawing = true; drawnCoords = []; };
+document.getElementById('clearBtn').onclick = () => {
+  isDrawing = false; drawnCoords = [];
+  const src = map.getSource('live-lines');
+  if (src) src.setData({ type:'FeatureCollection', features:[] });
+  stopAllSounds();
+};
+
 async function updateSimulation() {
   if (!drawnCoords.length) return;
   const pt = turf.point(drawnCoords[drawnCoords.length - 1]);
+  await ensureAudioUnlocked();
   await checkSoundZones(pt);
 }
 
 /* ---------------- Controls ---------------- */
+let mainTimer = null;
+
 document.getElementById('startBtn').onclick = async () => {
   await strongUnlock();
+
+  // Optional: pre-warm a few sounds to avoid first-hit lag
+  ['/zone_sound1.mp3','/zone_sound2.mp3','/zone_sound3.mp3'].forEach(url => loadSound(url));
+
+  if (mainTimer) return; // already running
   let lastResume = 0;
-  setInterval(async () => {
-    // self-heal if iOS suspends the graph
+  mainTimer = setInterval(async () => {
     if (audioCtx && audioCtx.state !== 'running') {
       const now = performance.now();
       if (now - lastResume > 1000) {
@@ -350,11 +423,15 @@ document.getElementById('startBtn').onclick = async () => {
   }, 1200);
 };
 
-document.getElementById('stopBtn').onclick = () => stopAllSounds();
+document.getElementById('stopBtn').onclick = () => {
+  stopAllSounds();
+  if (mainTimer) { clearInterval(mainTimer); mainTimer = null; }
+  // Optionally: audioCtx?.suspend(); // battery saver
+};
 
 document.getElementById('enableAudioBtn').onclick = async () => {
   await strongUnlock();
-  alert('Sound enabled. If silent on iPhone, set ring switch to RING and raise volume.');
+  alert('Sound enabled. If still silent on iPhone, set ring switch to RING and raise volume.');
 };
 
 document.getElementById('testMp3Btn').onclick = async () => {
@@ -363,17 +440,6 @@ document.getElementById('testMp3Btn').onclick = async () => {
   try { await el.play(); } catch(e) { console.warn('MP3 test failed', e); }
   setTimeout(() => { try { el.pause(); el.src=''; } catch{} }, 1500);
 };
-
-function stopAllSounds() {
-  sources.forEach((src, i) => {
-    if (src) { try { src.stop(0); src.disconnect(); } catch {} playingSources.delete(src); sources[i] = null; }
-    zoneFlags[i] = false;
-  });
-  for (const src of Array.from(playingSources)) {
-    try { src.stop(0); src.disconnect(); } catch {}
-    playingSources.delete(src);
-  }
-}
 
 /* ---------------- Layer toggles ---------------- */
 function toggleLayer(id, btnId, label) {
@@ -467,6 +533,16 @@ window.addEventListener('pagehide', () => {
       timestamp: Date.now()
     }));
   } catch {}
+});
+
+/* ---------------- Page visibility/focus: auto-resume ---------------- */
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible') {
+    try { await ensureAudioUnlocked(); } catch {}
+  }
+});
+window.addEventListener('focus', async () => {
+  try { await ensureAudioUnlocked(); } catch {}
 });
 </script>
 </body>
