@@ -8,41 +8,36 @@
   <link href="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.css" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
-    :root { --ui: #111; --bg: #fff; --acc: #eaeef3; --btn: #0f62fe; --danger:#e63946; }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-    #map { position: absolute; top: 0; bottom: 0; left: 260px; right: 0; filter: invert(1) hue-rotate(180deg); }
-    #sidebar {
-      position: absolute; inset: 0 auto 0 0; width: 260px; background: var(--bg);
-      border-right: 1px solid #ddd; padding: 12px; overflow-y: auto; z-index: 998;
-    }
-    h3 { margin: 6px 0 10px; font-size: 16px; color: var(--ui); }
-    .group { background:#fff; border:1px solid #ddd; border-radius:10px; padding:10px; margin-bottom:10px; }
-    .row { display:flex; gap:8px; }
-    .row > * { flex:1; }
-    input[type="text"] { width: 100%; padding: 8px 10px; border:1px solid #ccc; border-radius:8px; }
-    button { padding: 8px 10px; border-radius:8px; border:1px solid #ccc; background:#fff; cursor:pointer; }
-    .primary { background: var(--btn); color:#fff; border-color: var(--btn); }
-    .danger  { background: var(--danger); color:#fff; border-color: var(--danger); }
-    .ghost   { background:#fff; color:#111; border:1px solid #bbb; }
-    #peopleList { list-style: none; padding: 0; margin: 0; max-height: 120px; overflow:auto; border-top:1px dashed #ddd; }
-    #peopleList li { font-size: 13px; padding: 4px 0; border-bottom:1px dashed #eee; }
-    .layerToggle, .drawBtn {
-      position: absolute; top: 12px; background: #fff; border:1px solid #ccc; z-index: 999; cursor: pointer; padding: 6px 10px; border-radius:8px;
-    }
-    #bedrockToggle { left: 280px; }
-    #v2Toggle { left: 380px; }
-    #v3Toggle { left: 480px; }
-    #drawBtn { left: 580px; }
-    #clearBtn { left: 680px; }
-    .hint { font-size:12px; color:#666; margin-top:6px; }
-    .state { font-size:12px; color:#333; margin-top:6px; }
+    :root { --ui:#111; --bg:#fff; --acc:#eaeef3; --btn:#0f62fe; --danger:#e63946; }
+    *{ box-sizing:border-box; }
+    body{ margin:0; font-family: system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+    #map{ position:absolute; top:0; bottom:0; left:260px; right:0; filter: invert(1) hue-rotate(180deg); }
+    #sidebar{ position:absolute; inset:0 auto 0 0; width:260px; background:var(--bg); border-right:1px solid #ddd; padding:12px; overflow-y:auto; z-index:998; }
+    h3{ margin:6px 0 10px; font-size:16px; color:var(--ui); }
+    .group{ background:#fff; border:1px solid #ddd; border-radius:10px; padding:10px; margin-bottom:10px; }
+    .row{ display:flex; gap:8px; }
+    .row>*{ flex:1; }
+    input[type="text"]{ width:100%; padding:8px 10px; border:1px solid #ccc; border-radius:8px; }
+    button{ padding:8px 10px; border-radius:8px; border:1px solid #ccc; background:#fff; cursor:pointer; }
+    .primary{ background:var(--btn); color:#fff; border-color:var(--btn); }
+    .danger{ background:var(--danger); color:#fff; border-color:var(--danger); }
+    .ghost{ background:#fff; color:#111; border:1px solid #bbb; }
+    .hint{ font-size:12px; color:#666; margin-top:6px; }
+    #peopleList{ list-style:none; padding:0; margin:0; max-height:120px; overflow:auto; border-top:1px dashed #ddd; }
+    #peopleList li{ font-size:13px; padding:4px 0; border-bottom:1px dashed #eee; }
+    .layerToggle,.drawBtn{ position:absolute; top:12px; background:#fff; border:1px solid #ccc; z-index:999; cursor:pointer; padding:6px 10px; border-radius:8px; }
+    #bedrockToggle{ left:280px; }
+    #v2Toggle{ left:380px; }
+    #v3Toggle{ left:480px; }
+    #drawBtn{ left:580px; }
+    #clearBtn{ left:680px; }
+    #ctxState{ font-size:12px; color:#555; margin-left:6px; }
   </style>
 </head>
 <body>
 
   <div id="sidebar">
-    <h3>Shared Locations</h3>
+    <h3>Shared Locations <span id="ctxState">Audio: —</span></h3>
 
     <div class="group">
       <div class="row" style="margin-bottom:8px;">
@@ -65,7 +60,6 @@
         <button id="testMp3Btn" class="ghost">Test MP3</button>
       </div>
       <div class="hint">On iPhone, flip the ring/silent switch to <b>Ring</b> and raise volume.</div>
-      <div id="ctxState" class="state">Audio: (not started)</div>
     </div>
 
     <div class="group">
@@ -91,43 +85,34 @@ const map = new mapboxgl.Map({
   zoom: 16
 });
 
-/* ---------- AUDIO (mobile-friendly) ---------- */
-let audioCtx = null;
-let masterGain = null;
-let keepAliveNode = null;   // ConstantSource to keep context active
-let keepAliveGain = null;
+/* ---------------- AUDIO (iOS-safe) ---------------- */
+let audioCtx = null, masterGain = null;
 const playingSources = new Set();
 const MAX_SIMULTANEOUS = 6;
 
-const FADE_MS = 220;     // slightly longer on mobile
-const TARGET_GAIN = 1.0;
-
-const ctxStateEl = document.getElementById('ctxState');
-
-function updateCtxState() {
-  if (!audioCtx) { ctxStateEl.textContent = 'Audio: (not started)'; return; }
-  ctxStateEl.textContent = `Audio: ${audioCtx.state}`;
+function updateCtxBadge() {
+  const el = document.getElementById('ctxState');
+  if (el && audioCtx) el.textContent = `Audio: ${audioCtx.state}`;
 }
 
 function createContextIfNeeded() {
   if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({latencyHint: 'interactive'});
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
     masterGain = audioCtx.createGain();
     masterGain.gain.value = 1.0;
     masterGain.connect(audioCtx.destination);
 
-    // keep-alive (silent)
-    keepAliveGain = audioCtx.createGain();
-    keepAliveGain.gain.value = 0.0;
-    keepAliveGain.connect(masterGain);
+    // KEEP-ALIVE: a tiny 30 Hz tone at ~-70 dB that actually reaches the DAC (inaudible)
+    const keepAliveOsc = audioCtx.createOscillator();
+    const keepAliveGain = audioCtx.createGain();
+    keepAliveOsc.type = 'sine';
+    keepAliveOsc.frequency.value = 30;
+    keepAliveGain.gain.value = 0.0003;
+    keepAliveOsc.connect(keepAliveGain).connect(masterGain);
+    try { keepAliveOsc.start(); } catch {}
 
-    keepAliveNode = audioCtx.createConstantSource();
-    keepAliveNode.offset.value = 0.0;
-    keepAliveNode.connect(keepAliveGain);
-    keepAliveNode.start();
-
-    audioCtx.onstatechange = updateCtxState;
-    updateCtxState();
+    audioCtx.onstatechange = updateCtxBadge;
+    updateCtxBadge();
   }
 }
 async function ensureAudioUnlocked() {
@@ -135,14 +120,16 @@ async function ensureAudioUnlocked() {
   if (audioCtx.state === 'suspended') {
     try { await audioCtx.resume(); } catch {}
   }
-  updateCtxState();
+  updateCtxBadge();
   return audioCtx.state;
 }
+
+// strong unlock on gesture: real media element + short beep
 async function strongUnlock() {
   createContextIfNeeded();
-  // real media element through the graph (quiet)
+
   const el = document.createElement('audio');
-  el.src = '/zone_sound1.mp3';
+  el.src = '/zone_sound1.mp3'; // ensure this file exists
   el.crossOrigin = 'anonymous';
   el.preload = 'auto';
   el.loop = false;
@@ -150,36 +137,36 @@ async function strongUnlock() {
   el.muted = false;
   el.volume = 0.05;
   document.body.appendChild(el);
+
   try {
     const node = audioCtx.createMediaElementSource(el);
     node.connect(masterGain);
     await el.play();
-  } catch (e) { console.warn('MediaElement unlock failed:', e); }
-  // short beep
+  } catch(e){ console.warn('MediaElement unlock failed:', e); }
+
   try {
     const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    gain.gain.value = 0.15;
+    const g = audioCtx.createGain();
+    g.gain.value = 0.15;
     osc.frequency.value = 880;
-    osc.connect(gain);
-    gain.connect(masterGain);
+    osc.connect(g);
+    g.connect(masterGain);
     osc.start();
-    setTimeout(() => { try { osc.stop(); } catch {} }, 150);
-  } catch (e) { console.warn('Oscillator unlock failed:', e); }
-  setTimeout(() => { try { el.pause(); } catch {} el.src = ''; el.remove(); updateCtxState(); }, 1200);
-}
-// auto-resume hooks (helps when iOS tries to suspend again)
-window.addEventListener('touchstart', ensureAudioUnlocked, true);
-window.addEventListener('click', ensureAudioUnlocked, true);
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && audioCtx && audioCtx.state === 'suspended') audioCtx.resume().then(updateCtxState);
-});
+    setTimeout(() => { try { osc.stop(); } catch{} }, 150);
+  } catch(e){ console.warn('Oscillator unlock failed:', e); }
 
-// decode queue
+  setTimeout(() => { try { el.pause(); } catch{} el.src=''; el.remove(); }, 1200);
+  updateCtxBadge();
+}
+
+// decode queue (avoid spikes on mobile)
 const decodeQueue = [];
 let decoding = false;
 function loadSoundQueued(url) {
-  return new Promise((resolve) => { decodeQueue.push({ url, resolve }); processDecodeQueue(); });
+  return new Promise((resolve) => {
+    decodeQueue.push({ url, resolve });
+    processDecodeQueue();
+  });
 }
 async function processDecodeQueue() {
   if (decoding || decodeQueue.length === 0) return;
@@ -192,73 +179,35 @@ async function processDecodeQueue() {
     createContextIfNeeded();
     const audioBuffer = await audioCtx.decodeAudioData(buf);
     resolve(audioBuffer);
-  } catch (e) { console.warn('❌ Could not load sound:', url, e.message || e); resolve(null); }
-  finally { decoding = false; setTimeout(processDecodeQueue, 50); }
+  } catch (e) {
+    console.warn('❌ Could not load sound:', url, e.message || e);
+    resolve(null);
+  } finally {
+    decoding = false;
+    setTimeout(processDecodeQueue, 50);
+  }
 }
 async function loadSound(url) { createContextIfNeeded(); return loadSoundQueued(url); }
 
-/* per-zone envelope */
-let zoneGains = []; // GainNode per zone
-
-function startZoneSoundWithFade(i, buffer) {
+function startZoneSound(buffer) {
   if (!buffer) return null;
-
   if (playingSources.size >= MAX_SIMULTANEOUS) {
     const oldest = playingSources.values().next().value;
     try { oldest.stop(0); oldest.disconnect(); } catch {}
     playingSources.delete(oldest);
   }
-
-  if (!zoneGains[i]) {
-    zoneGains[i] = audioCtx.createGain();
-    zoneGains[i].gain.value = 0;
-    zoneGains[i].connect(masterGain);
-  }
-  const g = zoneGains[i];
-
   const src = audioCtx.createBufferSource();
   src.buffer = buffer;
   src.loop = true;
-  src.connect(g);
-
-  const now = audioCtx.currentTime;
-  try {
-    g.gain.cancelScheduledValues(now);
-    g.gain.setValueAtTime(0, now);
-    g.gain.linearRampToValueAtTime(TARGET_GAIN, now + FADE_MS / 1000);
-  } catch {}
-
-  src.start(now);
+  src.connect(masterGain || audioCtx.destination);
+  src.start(0);
   playingSources.add(src);
   return src;
 }
-function fadeOutAndStop(i) {
-  const src = sources[i];
-  const g   = zoneGains[i];
-  if (!src || !g) return;
-  const now = audioCtx.currentTime;
-  try {
-    g.gain.cancelScheduledValues(now);
-    g.gain.setValueAtTime(g.gain.value, now);
-    g.gain.linearRampToValueAtTime(0, now + FADE_MS / 1000);
-  } catch {}
-  const stopAt = now + (FADE_MS / 1000) + 0.02;
-  try { src.stop(stopAt); } catch {}
-  src.onended = () => {
-    try { src.disconnect(); } catch {}
-    playingSources.delete(src);
-    if (zoneGains[i]) { try { zoneGains[i].disconnect(); } catch {} zoneGains[i] = null; }
-    sources[i] = null;
-  };
-}
 
-/* ---------- MAP / DATA / LOGIC ---------- */
+/* ---------------- MAP / DATA / SOUND ---------------- */
 let bedrockZones = [], zoneFlags = [], audioBuffers = [], sources = [];
 let drawnCoords = [], isDrawing = false;
-
-// Hysteresis (avoid stop/start from GPS wobble)
-const HYSTERESIS_MS = 1500;
-const lastInsideAt = [];   // timestamp (ms) per zone
 
 map.on('load', async () => {
   const loadGeo = async (file) => (await fetch(file)).json();
@@ -273,53 +222,52 @@ map.on('load', async () => {
   audioBuffers = new Array(bedrockZones.length).fill(null);
   zoneFlags   = new Array(bedrockZones.length).fill(false);
   sources     = new Array(bedrockZones.length).fill(null);
-  zoneGains   = new Array(bedrockZones.length).fill(null);
-  for (let i=0;i<bedrockZones.length;i++) lastInsideAt[i]=0;
 
-  map.addSource('bedrock', { type: 'geojson', data: bedrock });
+  map.addSource('bedrock', { type:'geojson', data: bedrock });
   map.addLayer({
-    id: 'bedrock', type: 'fill', source: 'bedrock',
-    paint: { 'fill-color': ['interpolate', ['linear'], ['get', 'DN'], min, '#FF0000', mid, '#FFFFFF', max, '#0000FF'],
-             'fill-opacity': 0.6, 'fill-outline-color': '#000' }
+    id:'bedrock', type:'fill', source:'bedrock',
+    paint:{ 'fill-color':['interpolate',['linear'],['get','DN'],min,'#FF0000',mid,'#FFFFFF',max,'#0000FF'],
+            'fill-opacity':0.6, 'fill-outline-color':'#000' }
   });
 
   // V2
   const v2 = await loadGeo('v2.geojson');
   const d2 = v2.features.map(f => f.properties.DN).filter(Number.isFinite);
   const [min2, max2] = [Math.min(...d2), Math.max(...d2)];
-  map.addSource('v2layer', { type: 'geojson', data: v2 });
+  map.addSource('v2layer', { type:'geojson', data: v2 });
   map.addLayer({
     id:'v2layer', type:'fill', source:'v2layer',
-    paint:{'fill-color':['interpolate',['linear'],['get','DN'],min2,'#008000',(min2+max2)/2,'#FFFF00',max2,'#8B4513'],
-           'fill-opacity':0.4,'fill-outline-color':'#000'}
+    paint:{ 'fill-color':['interpolate',['linear'],['get','DN'],min2,'#008000',(min2+max2)/2,'#FFFF00',max2,'#8B4513'],
+            'fill-opacity':0.4, 'fill-outline-color':'#000' }
   });
 
   // V3
   const v3 = await loadGeo('v3.geojson');
   const d3 = v3.features.map(f => f.properties.DN).filter(Number.isFinite);
   const [min3, max3] = [Math.min(...d3), Math.max(...d3)];
-  map.addSource('v3layer', { type: 'geojson', data: v3 });
+  map.addSource('v3layer', { type:'geojson', data: v3 });
   map.addLayer({
     id:'v3layer', type:'fill', source:'v3layer',
-    paint:{'fill-color':['interpolate',['linear'],['get','DN'],min3,'#800080',(min3+max3)/2,'#FFC0CB',max3,'#00FFFF'],
-           'fill-opacity':0.4,'fill-outline-color':'#000'}
+    paint:{ 'fill-color':['interpolate',['linear'],['get','DN'],min3,'#800080',(min3+max3)/2,'#FFC0CB',max3,'#00FFFF'],
+            'fill-opacity':0.4, 'fill-outline-color':'#000' }
   });
 
-  // Live line
-  map.addSource('live-lines', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }});
+  // Live line (drawn + live people)
+  map.addSource('live-lines', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
   map.addLayer({ id:'live-lines', type:'line', source:'live-lines',
     paint:{ 'line-color':'#FF0000', 'line-width':4 } });
 
-  map.fitBounds(turf.bbox(bedrock), { padding: 20 });
+  map.fitBounds(turf.bbox(bedrock), { padding:20 });
 });
 
-// Live data + people list + zone checks
+// Pull live data + update list + trigger zones
 async function updateMap() {
   try {
-    const res = await fetch('/api/geo', { cache: 'no-store' });
+    const res = await fetch('/api/geo');
     const data = await res.json();
     map.getSource('live-lines').setData(data);
 
+    // People list
     const peopleList = document.getElementById('peopleList');
     const names = new Set(data.features.map(f => f.properties?.name).filter(Boolean));
     peopleList.innerHTML = '';
@@ -327,6 +275,7 @@ async function updateMap() {
       const li = document.createElement('li'); li.textContent = name; peopleList.appendChild(li);
     });
 
+    // Zone checks (each last point)
     data.features.forEach(feature => {
       const coords = feature?.geometry?.coordinates;
       if (coords && coords.length) {
@@ -335,49 +284,43 @@ async function updateMap() {
         checkSoundZones(pt);
       }
     });
-  } catch (err) { console.error('Error updating live data', err); }
+  } catch (err) {
+    console.error('Error updating live data', err);
+  }
 }
 
-// Draw points to trigger sound manually
+// Draw tool to manually trigger zones
 map.on('click', (e) => {
   if (!isDrawing) return;
   drawnCoords.push([e.lngLat.lng, e.lngLat.lat]);
-  const line = { type:'FeatureCollection', features:[{ type:'Feature', geometry:{ type:'LineString', coordinates:drawnCoords } }] };
+  const line = { type:'FeatureCollection', features:[{ type:'Feature', geometry:{ type:'LineString', coordinates: drawnCoords } }] };
   map.getSource('live-lines').setData(line);
 });
 document.getElementById('drawBtn').onclick = () => { isDrawing = true; drawnCoords = []; };
 document.getElementById('clearBtn').onclick = () => {
   isDrawing = false; drawnCoords = [];
-  map.getSource('live-lines').setData({ type: 'FeatureCollection', features: [] });
+  map.getSource('live-lines').setData({ type:'FeatureCollection', features:[] });
   stopAllSounds();
 };
 
 async function checkSoundZones(pt) {
-  const nowMs = Date.now();
   for (let i = 0; i < bedrockZones.length; i++) {
     const feature = bedrockZones[i];
     const polygon = turf.polygon(feature.geometry.coordinates);
     const isInside = turf.booleanPointInPolygon(pt, polygon);
 
-    if (isInside) {
-      lastInsideAt[i] = nowMs; // mark inside time
-      if (!zoneFlags[i]) {
-        if (!audioBuffers[i]) {
-          const dn = feature.properties.DN;
-          const soundPath = `/zone_sound${dn}.mp3`;
-          audioBuffers[i] = await loadSound(soundPath);
-        }
-        if (audioBuffers[i]) {
-          const src = startZoneSoundWithFade(i, audioBuffers[i]);
-          if (src) { sources[i] = src; zoneFlags[i] = true; }
-        }
+    if (isInside && !zoneFlags[i]) {
+      if (!audioBuffers[i]) {
+        const dn = feature.properties.DN;
+        audioBuffers[i] = await loadSound(`/zone_sound${dn}.mp3`);
       }
-    } else {
-      // only stop if outside long enough (hysteresis)
-      if (zoneFlags[i] && (nowMs - lastInsideAt[i] > HYSTERESIS_MS)) {
-        if (sources[i]) fadeOutAndStop(i);
-        zoneFlags[i] = false;
+      if (audioBuffers[i]) {
+        const src = startZoneSound(audioBuffers[i]);
+        if (src) { sources[i] = src; zoneFlags[i] = true; }
       }
+    } else if (!isInside && zoneFlags[i]) {
+      if (sources[i]) { try { sources[i].stop(0); sources[i].disconnect(); } catch {} playingSources.delete(sources[i]); sources[i] = null; }
+      zoneFlags[i] = false;
     }
   }
 }
@@ -388,20 +331,33 @@ async function updateSimulation() {
   await checkSoundZones(pt);
 }
 
-// Controls
+/* ---------------- Controls ---------------- */
 document.getElementById('startBtn').onclick = async () => {
   await strongUnlock();
-  updateCtxState();
-  setInterval(() => { updateSimulation(); updateMap(); }, 1500); // slightly slower = fewer toggles
+  let lastResume = 0;
+  setInterval(async () => {
+    // self-heal if iOS suspends the graph
+    if (audioCtx && audioCtx.state !== 'running') {
+      const now = performance.now();
+      if (now - lastResume > 1000) {
+        try { await audioCtx.resume(); } catch {}
+        lastResume = now;
+        updateCtxBadge();
+      }
+    }
+    updateSimulation();
+    updateMap();
+  }, 1200);
 };
+
 document.getElementById('stopBtn').onclick = () => stopAllSounds();
+
 document.getElementById('enableAudioBtn').onclick = async () => {
   await strongUnlock();
-  updateCtxState();
   alert('Sound enabled. If silent on iPhone, set ring switch to RING and raise volume.');
 };
+
 document.getElementById('testMp3Btn').onclick = async () => {
-  await ensureAudioUnlocked();
   const el = new Audio('/zone_sound1.mp3');
   el.playsInline = true; el.crossOrigin = 'anonymous';
   try { await el.play(); } catch(e) { console.warn('MP3 test failed', e); }
@@ -409,17 +365,17 @@ document.getElementById('testMp3Btn').onclick = async () => {
 };
 
 function stopAllSounds() {
-  for (let i = 0; i < sources.length; i++) {
-    if (sources[i]) fadeOutAndStop(i);
+  sources.forEach((src, i) => {
+    if (src) { try { src.stop(0); src.disconnect(); } catch {} playingSources.delete(src); sources[i] = null; }
     zoneFlags[i] = false;
-  }
+  });
   for (const src of Array.from(playingSources)) {
     try { src.stop(0); src.disconnect(); } catch {}
     playingSources.delete(src);
   }
 }
 
-/* ---------- LAYER TOGGLES ---------- */
+/* ---------------- Layer toggles ---------------- */
 function toggleLayer(id, btnId, label) {
   const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
   const newVis = vis === 'visible' ? 'none' : 'visible';
@@ -430,7 +386,7 @@ document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 
 document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
 document.getElementById('v3Toggle').onclick = () => toggleLayer('v3layer', 'v3Toggle', 'V3');
 
-/* ---------- LOCATION SHARING ---------- */
+/* ---------------- Location sharing (robust) ---------------- */
 const nameInput = document.getElementById('name');
 const shareBtn  = document.getElementById('shareLocationBtn');
 const stopShareBtn = document.getElementById('stopSharingBtn');
@@ -438,9 +394,7 @@ const stopShareBtn = document.getElementById('stopSharingBtn');
 let watchId = null, lastSentAt = 0, lastCoords = null;
 
 function isSecureContextForGeo() {
-  return location.protocol === 'https:' ||
-         location.hostname === 'localhost' ||
-         location.hostname === '127.0.0.1';
+  return location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
 }
 function requestGeoOnce() {
   return new Promise((resolve, reject) => {
@@ -454,11 +408,11 @@ function requestGeoOnce() {
 async function startSharing() {
   const name = nameInput.value.trim();
   if (!name) return alert('Enter your name');
-  if (!('geolocation' in navigator)) return alert('Geolocation not supported in this browser.');
+  if (!('geolocation' in navigator)) return alert('Geolocation not supported.');
   if (!isSecureContextForGeo()) return alert('Use HTTPS or localhost for mobile GPS.');
 
   try { await requestGeoOnce(); }
-  catch (e) { console.error('Initial geolocation request failed:', e); alert('Location permission denied or unavailable.'); return; }
+  catch (e) { console.error('Initial geolocation failed:', e); alert('Location permission denied or unavailable.'); return; }
 
   shareBtn.style.display = 'none';
   stopShareBtn.style.display = 'inline-block';
@@ -469,15 +423,12 @@ async function startSharing() {
   watchId = navigator.geolocation.watchPosition(async (pos) => {
     const now = Date.now();
     const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-
     const sameAsLast = lastCoords &&
       Math.abs(coords.lat - lastCoords.lat) < 1e-7 &&
       Math.abs(coords.lng - lastCoords.lng) < 1e-7;
-
     if (now - lastSentAt < MIN_INTERVAL_MS && sameAsLast) return;
 
-    lastCoords = coords;
-    lastSentAt = now;
+    lastCoords = coords; lastSentAt = now;
 
     try {
       const res = await fetch('/api/geo', {
@@ -487,7 +438,9 @@ async function startSharing() {
         keepalive: true
       });
       if (!res.ok) console.warn('POST /api/geo failed:', res.status, res.statusText);
-    } catch (err) { console.warn('Sending location failed:', err); }
+    } catch (err) {
+      console.warn('Sending location failed:', err);
+    }
   }, (err) => {
     console.error('watchPosition error:', err);
     alert('Location error: ' + (err.message || err));
