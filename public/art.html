@@ -93,9 +93,11 @@ const map = new mapboxgl.Map({
   zoom: 16
 });
 
-/* ---------- MOBILE-FRIENDLY AUDIO ---------- */
+/* ---------- MOBILE-FRIENDLY AUDIO (with persistent keeper) ---------- */
 let audioCtx = null;
 let masterGain = null;
+let keeperEl = null;              // persistent muted loop to keep iOS from suspending
+let debugHooked = false;
 const playingSources = new Set();
 const MAX_SIMULTANEOUS = 6;
 
@@ -105,6 +107,10 @@ function createContextIfNeeded() {
     masterGain = audioCtx.createGain();
     masterGain.gain.value = 1.0;
     masterGain.connect(audioCtx.destination);
+    if (!debugHooked) {
+      audioCtx.onstatechange = () => console.log('AudioContext state:', audioCtx.state);
+      debugHooked = true;
+    }
   }
 }
 async function ensureAudioUnlocked() {
@@ -114,49 +120,51 @@ async function ensureAudioUnlocked() {
   }
   return audioCtx.state;
 }
+
+// Strong unlock: start a *muted, looping* <audio> source connected to the context, plus a tiny beep.
 async function strongUnlock() {
   createContextIfNeeded();
 
-  // route a real media element quietly through the context
-  const el = document.createElement('audio');
-  el.src = '/zone_sound1.mp3';
-  el.crossOrigin = 'anonymous';
-  el.preload = 'auto';
-  el.loop = false;
-  el.playsInline = true;
-  el.muted = false;
-  el.volume = 0.05;
-  document.body.appendChild(el);
-  try {
-    const node = audioCtx.createMediaElementSource(el);
-    node.connect(masterGain);
-    await el.play();
-  } catch (e) {
-    console.warn('MediaElement unlock failed:', e);
+  if (!keeperEl) {
+    keeperEl = document.createElement('audio');
+    keeperEl.src = '/zone_sound1.mp3';   // must exist on your server
+    keeperEl.crossOrigin = 'anonymous';
+    keeperEl.preload = 'auto';
+    keeperEl.loop = true;
+    keeperEl.playsInline = true;
+    keeperEl.muted = true;               // muted keeps it inaudible but "playing"
+    document.body.appendChild(keeperEl);
+    try {
+      const node = audioCtx.createMediaElementSource(keeperEl);
+      node.connect(masterGain);
+      await keeperEl.play();             // must be in user gesture
+    } catch (e) {
+      console.warn('Keeper play failed:', e);
+    }
   }
 
-  // short beep
   try {
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
-    gain.gain.value = 0.15;
+    gain.gain.value = 0.12;
     osc.frequency.value = 880;
     osc.connect(gain);
     gain.connect(masterGain);
     osc.start();
-    setTimeout(() => { try { osc.stop(); } catch {} }, 150);
+    setTimeout(() => { try { osc.stop(); } catch {} }, 120);
   } catch (e) {
     console.warn('Oscillator unlock failed:', e);
   }
-
-  setTimeout(() => {
-    try { el.pause(); } catch {}
-    el.src = '';
-    el.remove();
-  }, 1200);
 }
 
-// decode queue
+// Keep resuming when tab comes back
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+});
+
+// Decode queue (avoid spikes on mobile)
 const decodeQueue = [];
 let decoding = false;
 function loadSoundQueued(url) {
@@ -206,6 +214,8 @@ function startZoneSound(buffer) {
 
 /* ---------- MAP / DATA / SOUND LOGIC ---------- */
 let bedrockZones = [], zoneFlags = [], audioBuffers = [], sources = [];
+let leaveCounters = []; // for debounce
+const LEAVE_THRESHOLD = 2; // require N consecutive "outside" checks to stop
 let drawnCoords = [], isDrawing = false;
 
 map.on('load', async () => {
@@ -219,8 +229,9 @@ map.on('load', async () => {
   const mid = (min + max) / 2;
 
   audioBuffers = new Array(bedrockZones.length).fill(null);
-  zoneFlags   = new Array(bedrockZones.length).fill(false);
-  sources     = new Array(bedrockZones.length).fill(null);
+  zoneFlags    = new Array(bedrockZones.length).fill(false);
+  sources      = new Array(bedrockZones.length).fill(null);
+  leaveCounters= new Array(bedrockZones.length).fill(0);
 
   map.addSource('bedrock', { type: 'geojson', data: bedrock });
   map.addLayer({
@@ -301,29 +312,35 @@ document.getElementById('clearBtn').onclick = () => {
   stopAllSounds();
 };
 
+// Debounced zone checker
 async function checkSoundZones(pt) {
   for (let i = 0; i < bedrockZones.length; i++) {
     const feature = bedrockZones[i];
     const polygon = turf.polygon(feature.geometry.coordinates);
     const isInside = turf.booleanPointInPolygon(pt, polygon);
 
-    if (isInside && !zoneFlags[i]) {
-      if (!audioBuffers[i]) {
-        const dn = feature.properties.DN;
-        const soundPath = `/zone_sound${dn}.mp3`;
-        audioBuffers[i] = await loadSound(soundPath);
+    if (isInside) {
+      leaveCounters[i] = 0;
+      if (!zoneFlags[i]) {
+        if (!audioBuffers[i]) {
+          const dn = feature.properties.DN;
+          audioBuffers[i] = await loadSound(`/zone_sound${dn}.mp3`);
+        }
+        if (audioBuffers[i]) {
+          const src = startZoneSound(audioBuffers[i]);
+          if (src) { sources[i] = src; zoneFlags[i] = true; }
+        }
       }
-      if (audioBuffers[i]) {
-        const src = startZoneSound(audioBuffers[i]);
-        if (src) { sources[i] = src; zoneFlags[i] = true; }
+    } else if (zoneFlags[i]) {
+      if (++leaveCounters[i] >= LEAVE_THRESHOLD) {
+        if (sources[i]) {
+          try { sources[i].stop(0); sources[i].disconnect(); } catch {}
+          playingSources.delete(sources[i]);
+          sources[i] = null;
+        }
+        zoneFlags[i] = false;
+        leaveCounters[i] = 0;
       }
-    } else if (!isInside && zoneFlags[i]) {
-      if (sources[i]) {
-        try { sources[i].stop(0); sources[i].disconnect(); } catch {}
-        playingSources.delete(sources[i]);
-        sources[i] = null;
-      }
-      zoneFlags[i] = false;
     }
   }
 }
@@ -355,6 +372,7 @@ function stopAllSounds() {
   sources.forEach((src, i) => {
     if (src) { try { src.stop(0); src.disconnect(); } catch {} playingSources.delete(src); sources[i] = null; }
     zoneFlags[i] = false;
+    leaveCounters[i] = 0;
   });
   for (const src of Array.from(playingSources)) {
     try { src.stop(0); src.disconnect(); } catch {}
@@ -373,7 +391,7 @@ document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 
 document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
 document.getElementById('v3Toggle').onclick = () => toggleLayer('v3layer', 'v3Toggle', 'V3');
 
-/* ---------- LOCATION SHARING (ROBUST) ---------- */
+/* ---------- LOCATION SHARING (robust) ---------- */
 const nameInput = document.getElementById('name');
 const shareBtn  = document.getElementById('shareLocationBtn');
 const stopShareBtn = document.getElementById('stopSharingBtn');
@@ -451,6 +469,7 @@ function stopSharing() {
 shareBtn.onclick = startSharing;
 stopShareBtn.onclick = stopSharing;
 
+// Best-effort stop signal on page hide
 window.addEventListener('pagehide', () => {
   try {
     navigator.sendBeacon?.('/api/geo', JSON.stringify({
