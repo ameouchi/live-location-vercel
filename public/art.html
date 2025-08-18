@@ -112,13 +112,15 @@
 
   <!-- Floating chips (always visible) -->
   <div class="chip">
-    <button id="bedrockToggle">Bedrock: ON</button>
+    <button id="bedrockToggle">Acequia: ENCENDIDA</button>
+        <button id="drawBtn"  class="fab">Línea</button>
+    <button id="clearBtn" class="fab">Limpiar</button>
   </div>
 
   <!-- Floating actions (draw / clear) -->
   <div class="fab-stack">
-    <button id="drawBtn"  class="fab">Draw Line</button>
-    <button id="clearBtn" class="fab">Clear</button>
+    <button id="drawBtn"  class="fab">Línea</button>
+    <button id="clearBtn" class="fab">Limpiar</button>
   </div>
 
   <!-- Desktop sidebar -->
@@ -142,10 +144,8 @@
         <button id="stopBtn"  class="ghost">■ Stop Sounds</button>
       </div>
       <div class="row" style="margin-top:8px;">
-        <button id="enableAudioBtn" class="ghost">🔊 Enable Sound</button>
-        <button id="testMp3Btn" class="ghost">Test MP3</button>
+
       </div>
-      <div class="hint">On iPhone, set the Ring switch to <b>Ring</b> and raise volume.</div>
     </div>
 
     <div class="group">
@@ -159,35 +159,28 @@
     <div id="sheetHeader">
       <div class="drag" id="sheetHandle"></div>
       <div style="display:flex; align-items:center; justify-content:space-between; padding:0 4px 6px;">
-        <div style="font-weight:700;">Controls</div>
-        <div id="ctxStateMobile" style="font-size:12px; color:#667;">Audio: —</div>
       </div>
     </div>
     <div id="sheetBody">
       <div class="group">
         <div class="controlRow">
-          <button id="startBtn_m" class="primary">▶ Start</button>
-          <button id="stopBtn_m"  class="ghost">■ Stop Sounds</button>
+          <button id="startBtn_m" class="primary">▶ Comenzar</button>
+          <button id="stopBtn_m"  class="ghost">■ Detener Sonidos</button>
         </div>
-        <div class="controlRow" style="margin-top:8px;">
-          <button id="enableAudioBtn_m" class="ghost">🔊 Enable</button>
-          <button id="testMp3Btn_m"   class="ghost">Test MP3</button>
-        </div>
-        <div class="hint">If silent on iPhone, flip the Ring switch to <b>Ring</b>.</div>
       </div>
 
       <div class="group">
         <div class="row" style="margin-bottom:10px;">
-          <input id="name_m" type="text" placeholder="Enter your name" />
+          <input id="name_m" type="text" placeholder="Escribe tu nombre" />
         </div>
-        <div class="controlRow">
-          <button id="shareLocationBtn_m" class="alt">Start Sharing</button>
-          <button id="stopSharingBtn_m" class="danger" style="display:none;">Stop</button>
+        <div class="row">
+          <button id="shareLocationBtn_m" class="alt">Compartir Ubicación</button>
+          <button id="stopSharingBtn_m" class="danger" style="display:none;">Dejar de Compartir Ubicación</button>
         </div>
       </div>
 
       <div class="group">
-        <strong>People</strong>
+        <strong>Participantes</strong>
         <ul id="peopleList_m"></ul>
       </div>
     </div>
@@ -481,9 +474,9 @@ function toggleLayer(id, btnId, label) {
   const newVis = vis === 'visible' ? 'none' : 'visible';
   map.setLayoutProperty(id, 'visibility', newVis);
   const btn = document.getElementById(btnId);
-  if (btn) btn.textContent = `${label}: ${newVis === 'visible' ? 'ON' : 'OFF'}`;
+  if (btn) btn.textContent = `${label}: ${newVis === 'visible' ? 'ENCENDIDA' : 'APAGADA'}`;
 }
-document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock','bedrockToggle','Bedrock');
+document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock','bedrockToggle','Acequia');
 
 /* Location sharing (desktop + mobile) */
 const elName   = document.getElementById('name');
@@ -554,7 +547,7 @@ function setSheet(open){
   // collapsed = 52px height, open = natural height
   sheet.style.transform = open ? 'translateY(0)' : 'translateY(calc(100% - 52px))';
 }
-setSheet(false); // start open on first load
+setSheet(true); // start open on first load
 
 let startY=0, startT=0, dragging=false;
 function onStart(e){ dragging=true; startY=(e.touches?e.touches[0].clientY:e.clientY); startT=sheet.getBoundingClientRect().top; }
