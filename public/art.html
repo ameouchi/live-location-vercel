@@ -27,10 +27,8 @@
     #peopleList li{ font-size:13px; padding:4px 0; border-bottom:1px dashed #eee; }
     .layerToggle,.drawBtn{ position:absolute; top:12px; background:#fff; border:1px solid #ccc; z-index:999; cursor:pointer; padding:6px 10px; border-radius:8px; }
     #bedrockToggle{ left:280px; }
-    #v2Toggle{ left:380px; }
-    #v3Toggle{ left:480px; }
-    #drawBtn{ left:580px; }
-    #clearBtn{ left:680px; }
+    #drawBtn{ left:380px; }
+    #clearBtn{ left:480px; }
     #ctxState{ font-size:12px; color:#555; margin-left:6px; }
   </style>
 </head>
@@ -70,8 +68,6 @@
 
   <div id="map"></div>
   <button id="bedrockToggle" class="layerToggle">Bedrock: ON</button>
-  <button id="v2Toggle" class="layerToggle">V2: ON</button>
-  <button id="v3Toggle" class="layerToggle">V3: ON</button>
   <button id="drawBtn" class="drawBtn">Draw Line</button>
   <button id="clearBtn" class="drawBtn">Clear</button>
 
@@ -82,13 +78,13 @@ mapboxgl.accessToken = 'pk.eyJ1IjoibGFtZW91Y2hpIiwiYSI6ImNsa3ZqdHZtMDBjbTQzcXBpN
 const map = new mapboxgl.Map({
   container: 'map',
   style: 'mapbox://styles/lameouchi/cme04okvl00be01rydkfj6r43',
-  center: [-71.12953, 42.34836],
+  center: [-100.3846034891744, 20.59513157871081],
   zoom: 16
 });
 
 /* ---------------- AUDIO (iOS-safe) ---------------- */
 let audioCtx = null, masterGain = null;
-const playingSources = new Set(); // holds {src, gain}
+const playingSources = new Set(); // stores {src, gain}
 const MAX_SIMULTANEOUS = 6;
 let interactionBound = false;
 
@@ -104,10 +100,9 @@ function createContextIfNeeded() {
     masterGain.gain.value = 1.0;
     masterGain.connect(audioCtx.destination);
 
-    // Inaudible keep-alive that actually reaches DAC (helps Safari stay "running")
+    // ultra-quiet keep-alive to keep Safari’s output "hot"
     const keepAliveOsc = audioCtx.createOscillator();
     const keepAliveGain = audioCtx.createGain();
-    keepAliveOsc.type = 'sine';
     keepAliveOsc.frequency.value = 30;
     keepAliveGain.gain.value = 0.0003;
     keepAliveOsc.connect(keepAliveGain).connect(masterGain);
@@ -125,8 +120,6 @@ async function ensureAudioUnlocked() {
   updateCtxBadge();
   return audioCtx.state;
 }
-
-// One-time global unlock on the very first user interaction anywhere
 function bindFirstInteractionUnlock() {
   if (interactionBound) return;
   interactionBound = true;
@@ -136,26 +129,21 @@ function bindFirstInteractionUnlock() {
     await strongUnlock();
   };
   document.addEventListener('pointerdown', onceUnlock, { once: true });
-  document.addEventListener('touchend', onceUnlock, { once: true });
+  document.addEventListener('touchend',  onceUnlock, { once: true });
 }
-// bind immediately
 bindFirstInteractionUnlock();
 
-// Strong unlock sequence: play a tiny real <audio>, beep via WebAudio, and briefly auto-resume
 async function strongUnlock() {
   createContextIfNeeded();
 
-  // 1) Real media element
+  // 1) real <audio> routed into context
   const el = document.createElement('audio');
-  el.src = '/zone_sound1.mp3';  // must exist; serve as Content-Type: audio/mpeg
+  el.src = '/zone_sound1.mp3';      // make sure this exists and is small
   el.preload = 'auto';
   el.crossOrigin = 'anonymous';
   el.playsInline = true;
-  el.controls = false;
-  el.muted = false;
-  el.volume = 0.01;
+  el.volume = 0.05;
   document.body.appendChild(el);
-
   try {
     const node = audioCtx.createMediaElementSource(el);
     node.connect(masterGain);
@@ -164,7 +152,7 @@ async function strongUnlock() {
     console.warn('MediaElement unlock failed:', e);
   }
 
-  // 2) Short WebAudio beep
+  // 2) quick beep
   try {
     const osc = audioCtx.createOscillator();
     const g = audioCtx.createGain();
@@ -177,13 +165,11 @@ async function strongUnlock() {
     console.warn('Oscillator unlock failed:', e);
   }
 
-  // 3) Keep resuming for ~2s (some iOS Safari builds re-suspend immediately)
+  // 3) keep resuming briefly
   const t0 = performance.now();
   const tick = async () => {
     if (!audioCtx) return;
-    if (audioCtx.state !== 'running') {
-      try { await audioCtx.resume(); } catch {}
-    }
+    if (audioCtx.state !== 'running') { try { await audioCtx.resume(); } catch {} }
     updateCtxBadge();
     if (performance.now() - t0 < 2000) requestAnimationFrame(tick);
   };
@@ -192,14 +178,11 @@ async function strongUnlock() {
   setTimeout(() => { try { el.pause(); } catch{} el.src=''; el.remove(); }, 1500);
 }
 
-/* ---------- Decode queue to avoid mobile stalls ---------- */
+/* ---- Decode queue ---- */
 const decodeQueue = [];
 let decoding = false;
 function loadSoundQueued(url) {
-  return new Promise((resolve) => {
-    decodeQueue.push({ url, resolve });
-    processDecodeQueue();
-  });
+  return new Promise((resolve) => { decodeQueue.push({ url, resolve }); processDecodeQueue(); });
 }
 async function processDecodeQueue() {
   if (decoding || decodeQueue.length === 0) return;
@@ -222,21 +205,20 @@ async function processDecodeQueue() {
 }
 async function loadSound(url) { createContextIfNeeded(); return loadSoundQueued(url); }
 
-/* ---------- Start/stop with per-sound fades ---------- */
+/* ---- start/stop with fades ---- */
 function startZoneSound(buffer) {
   if (!buffer) return null;
 
   if (playingSources.size >= MAX_SIMULTANEOUS) {
-    // Stop oldest
     const oldest = playingSources.values().next().value;
-    try { oldest.src.stop(0); oldest.src.disconnect(); oldest.gain.disconnect(); } catch {}
+    stopHandle(oldest);             // fade-out eviction
     playingSources.delete(oldest);
   }
 
   const src = audioCtx.createBufferSource();
   const g = audioCtx.createGain();
   g.gain.setValueAtTime(0, audioCtx.currentTime);
-  g.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.15); // fade in
+  g.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.15);
 
   src.buffer = buffer;
   src.loop = true;
@@ -254,7 +236,7 @@ function stopHandle(handle) {
     handle.gain.gain.cancelScheduledValues(now);
     const current = handle.gain.gain.value;
     handle.gain.gain.setValueAtTime(current, now);
-    handle.gain.gain.linearRampToValueAtTime(0, now + 0.12); // fade out
+    handle.gain.gain.linearRampToValueAtTime(0, now + 0.12);
     setTimeout(() => {
       try { handle.src.stop(0); handle.src.disconnect(); handle.gain.disconnect(); } catch {}
       playingSources.delete(handle);
@@ -267,16 +249,20 @@ function stopAllSounds() {
 
 /* ---------------- MAP / DATA / SOUND ---------------- */
 let bedrockZones = [], zoneFlags = [], audioBuffers = [], sources = [];
+let zoneBBoxes = []; // for bbox prefilter
 let drawnCoords = [], isDrawing = false;
 
 map.on('load', async () => {
   const loadGeo = async (file) => (await fetch(file)).json();
 
-  // Bedrock
-  const bedrock = await loadGeo('bedrock_depth_vector.geojson');
+  // Use your file here
+  const bedrock = await loadGeo('acequia.geojson');
   bedrockZones = bedrock.features || [];
+  zoneBBoxes = bedrockZones.map(f => turf.bbox(f)); // bbox prefilter
+
+  // color scale guard
   const dns = bedrockZones.map(f => f?.properties?.DN).filter(Number.isFinite);
-  const [min, max] = [Math.min(...dns), Math.max(...dns)];
+  const [min, max] = dns.length ? [Math.min(...dns), Math.max(...dns)] : [0, 1];
   const mid = (min + max) / 2;
 
   audioBuffers = new Array(bedrockZones.length).fill(null);
@@ -286,33 +272,11 @@ map.on('load', async () => {
   map.addSource('bedrock', { type:'geojson', data: bedrock });
   map.addLayer({
     id:'bedrock', type:'fill', source:'bedrock',
-    paint:{ 'fill-color':['interpolate',['linear'],['get','DN'],min,'#FF0000',mid,'#FFFFFF',max,'#0000FF'],
+    paint:{ 'fill-color':['interpolate',['linear'],['get','DN'],min,'#0000FF',mid,'#FFFFFF',max,'#FF0000'],
             'fill-opacity':0.6, 'fill-outline-color':'#000' }
   });
 
-  // V2
-  const v2 = await loadGeo('v2.geojson');
-  const d2 = (v2.features||[]).map(f => f?.properties?.DN).filter(Number.isFinite);
-  const [min2, max2] = [Math.min(...d2), Math.max(...d2)];
-  map.addSource('v2layer', { type:'geojson', data: v2 });
-  map.addLayer({
-    id:'v2layer', type:'fill', source:'v2layer',
-    paint:{ 'fill-color':['interpolate',['linear'],['get','DN'],min2,'#008000',(min2+max2)/2,'#FFFF00',max2,'#8B4513'],
-            'fill-opacity':0.4, 'fill-outline-color':'#000' }
-  });
-
-  // V3
-  const v3 = await loadGeo('v3.geojson');
-  const d3 = (v3.features||[]).map(f => f?.properties?.DN).filter(Number.isFinite);
-  const [min3, max3] = [Math.min(...d3), Math.max(...d3)];
-  map.addSource('v3layer', { type:'geojson', data: v3 });
-  map.addLayer({
-    id:'v3layer', type:'fill', source:'v3layer',
-    paint:{ 'fill-color':['interpolate',['linear'],['get','DN'],min3,'#800080',(min3+max3)/2,'#FFC0CB',max3,'#00FFFF'],
-            'fill-opacity':0.4, 'fill-outline-color':'#000' }
-  });
-
-  // Live line (drawn + live people)
+  // Live line
   map.addSource('live-lines', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
   map.addLayer({ id:'live-lines', type:'line', source:'live-lines',
     paint:{ 'line-color':'#FF0000', 'line-width':4 } });
@@ -322,20 +286,39 @@ map.on('load', async () => {
   }
 });
 
-/* ---------------- Zone checks ---------------- */
+/* ---- Zone checks (handles + bbox prefilter) ---- */
 async function checkSoundZones(pt) {
   for (let i = 0; i < bedrockZones.length; i++) {
     const feature = bedrockZones[i];
-    const polygon = turf.polygon(feature.geometry.coordinates);
-    const isInside = turf.booleanPointInPolygon(pt, polygon);
+
+    // bbox quick reject
+    const bb = zoneBBoxes[i];
+    if (bb) {
+      const [minX, minY, maxX, maxY] = bb;
+      const [x, y] = pt.geometry.coordinates;
+      if (x < minX || x > maxX || y < minY || y > maxY) {
+        // if it was on before, turn it off
+        if (zoneFlags[i]) {
+          if (sources[i]) { stopHandle(sources[i]); sources[i] = null; }
+          zoneFlags[i] = false;
+        }
+        continue;
+      }
+    }
+
+    // precise check (Polygon or MultiPolygon)
+    const isInside = turf.booleanPointInPolygon(pt, feature);
 
     if (isInside && !zoneFlags[i]) {
       if (!audioBuffers[i]) {
-        const dn = feature.properties.DN;
-        audioBuffers[i] = await loadSound(`/zone_sound${dn}.mp3`);
+        const dn = feature.properties?.DN;
+        if (dn != null) {
+          const soundPath = `/zone_sound${dn}.mp3`;
+          audioBuffers[i] = await loadSound(soundPath);
+        }
       }
       if (audioBuffers[i]) {
-        const handle = startZoneSound(audioBuffers[i]);
+        const handle = startZoneSound(audioBuffers[i]); // {src, gain}
         if (handle) { sources[i] = handle; zoneFlags[i] = true; }
       }
     } else if (!isInside && zoneFlags[i]) {
@@ -345,7 +328,7 @@ async function checkSoundZones(pt) {
   }
 }
 
-/* ---------------- Live data + list + triggers ---------------- */
+/* ---- Live data + list + triggers ---- */
 async function updateMap() {
   try {
     const res = await fetch('/api/geo');
@@ -361,7 +344,7 @@ async function updateMap() {
       const li = document.createElement('li'); li.textContent = name; peopleList.appendChild(li);
     });
 
-    // Zone checks (each last point)
+    // Zone checks
     (data.features||[]).forEach(feature => {
       const coords = feature?.geometry?.coordinates;
       if (coords && coords.length) {
@@ -375,7 +358,7 @@ async function updateMap() {
   }
 }
 
-/* ---------------- Draw tool to manually trigger zones ---------------- */
+/* ---- Draw tool (also triggers sounds) ---- */
 map.on('click', (e) => {
   if (!isDrawing) return;
   drawnCoords.push([e.lngLat.lng, e.lngLat.lat]);
@@ -390,7 +373,6 @@ document.getElementById('clearBtn').onclick = () => {
   if (src) src.setData({ type:'FeatureCollection', features:[] });
   stopAllSounds();
 };
-
 async function updateSimulation() {
   if (!drawnCoords.length) return;
   const pt = turf.point(drawnCoords[drawnCoords.length - 1]);
@@ -398,16 +380,16 @@ async function updateSimulation() {
   await checkSoundZones(pt);
 }
 
-/* ---------------- Controls ---------------- */
+/* ---- Controls ---- */
 let mainTimer = null;
 
 document.getElementById('startBtn').onclick = async () => {
   await strongUnlock();
 
-  // Optional: pre-warm a few sounds to avoid first-hit lag
+  // pre-warm some assets to avoid first-hit lag (optional)
   ['/zone_sound1.mp3','/zone_sound2.mp3','/zone_sound3.mp3'].forEach(url => loadSound(url));
 
-  if (mainTimer) return; // already running
+  if (mainTimer) return;
   let lastResume = 0;
   mainTimer = setInterval(async () => {
     if (audioCtx && audioCtx.state !== 'running') {
@@ -426,7 +408,6 @@ document.getElementById('startBtn').onclick = async () => {
 document.getElementById('stopBtn').onclick = () => {
   stopAllSounds();
   if (mainTimer) { clearInterval(mainTimer); mainTimer = null; }
-  // Optionally: audioCtx?.suspend(); // battery saver
 };
 
 document.getElementById('enableAudioBtn').onclick = async () => {
@@ -441,7 +422,7 @@ document.getElementById('testMp3Btn').onclick = async () => {
   setTimeout(() => { try { el.pause(); el.src=''; } catch{} }, 1500);
 };
 
-/* ---------------- Layer toggles ---------------- */
+/* ---- Layer toggle ---- */
 function toggleLayer(id, btnId, label) {
   const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
   const newVis = vis === 'visible' ? 'none' : 'visible';
@@ -449,10 +430,8 @@ function toggleLayer(id, btnId, label) {
   document.getElementById(btnId).textContent = `${label}: ${newVis === 'visible' ? 'ON' : 'OFF'}`;
 }
 document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock', 'bedrockToggle', 'Bedrock');
-document.getElementById('v2Toggle').onclick = () => toggleLayer('v2layer', 'v2Toggle', 'V2');
-document.getElementById('v3Toggle').onclick = () => toggleLayer('v3layer', 'v3Toggle', 'V3');
 
-/* ---------------- Location sharing (robust) ---------------- */
+/* ---- Location sharing (robust) ---- */
 const nameInput = document.getElementById('name');
 const shareBtn  = document.getElementById('shareLocationBtn');
 const stopShareBtn = document.getElementById('stopSharingBtn');
@@ -535,7 +514,7 @@ window.addEventListener('pagehide', () => {
   } catch {}
 });
 
-/* ---------------- Page visibility/focus: auto-resume ---------------- */
+/* ---- Page visibility: auto-resume ---- */
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible') {
     try { await ensureAudioUnlocked(); } catch {}
