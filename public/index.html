@@ -1,57 +1,101 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Share Location</title>
-  <style>
-    body { font-family: sans-serif; text-align: center; margin-top: 50px; }
-    #start, #stop { font-size: 24px; padding: 20px 40px; border-radius: 50%; margin: 10px; }
-  </style>
+  <title>Map – Simulation & Layers (Mobile Friendly)</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+
+  <!-- Mapbox GL JS & CSS -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.js"></script>
+
+  <!-- turf.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+  <!-- App CSS -->
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- App JS -->
+  <script defer src="app.js"></script>
 </head>
 <body>
-  <h1>Live Location Sharing</h1>
-  <input id="name" type="text" placeholder="Enter your name" />
-  <br><br>
-  <button id="start">Start Sharing</button>
-  <button id="stop">Stop Sharing</button>
 
-  <script>
-    let watchId = null;
+  <!-- Map -->
+  <div id="map"></div>
 
-    document.getElementById('start').onclick = () => {
-      const name = document.getElementById('name').value.trim();
-      if (!name) return alert('Enter your name');
-      if (!navigator.geolocation) return alert('Geolocation not supported');
+  <!-- Floating chips (always visible) -->
+  <div class="chip">
+    <button id="bedrockToggle">Acequia: ENCENDIDA</button>
+  </div>
 
-      watchId = navigator.geolocation.watchPosition(pos => {
-        console.log("Sending position:", pos.coords);
-        fetch('/api/geo', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name,
-            coords: {
-              lat: pos.coords.latitude,
-              lng: pos.coords.longitude
-            },
-            timestamp: Date.now()
-          })
-        });
-      }, error => {
-        console.error("Geolocation error", error);
-      }, {
-        enableHighAccuracy: true,
-        maximumAge: 1000,
-        timeout: 5000
-      });
-    };
+  <!-- Floating actions (draw / clear) -->
+  <div class="fab-stack">
+    <button id="drawBtn"  class="fab">✏️ Línea</button>
+    <button id="clearBtn" class="fab">🧹 Limpiar</button>
+  </div>
 
-    document.getElementById('stop').onclick = () => {
-      if (watchId !== null) {
-        navigator.geolocation.clearWatch(watchId);
-        watchId = null;
-        alert('Stopped sharing');
-      }
-    };
-  </script>
+  <!-- Desktop sidebar -->
+  <aside id="sidebar">
+    <h3>Shared Locations <span id="ctxState">Audio: —</span></h3>
+
+    <div class="group">
+      <div class="row" style="margin-bottom:10px;">
+        <input id="name" type="text" placeholder="Enter your name" />
+      </div>
+      <div class="row">
+        <button id="shareLocationBtn" class="primary">Start Sharing</button>
+        <button id="stopSharingBtn" class="danger" style="display:none;">Stop</button>
+      </div>
+      <div class="hint">Mobile requires HTTPS or localhost for GPS.</div>
+    </div>
+
+    <div class="group">
+      <div class="row">
+        <button id="startBtn" class="primary">▶ Start</button>
+        <button id="stopBtn"  class="ghost">■ Stop Sounds</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <strong>People</strong>
+      <ul id="peopleList"></ul>
+    </div>
+  </aside>
+
+  <!-- Mobile bottom sheet -->
+  <section id="sheet" aria-label="Controls">
+    <div id="sheetHeader">
+      <div class="drag" id="sheetHandle"></div>
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:0 4px 6px;">
+        <div style="font-weight:700;">Controles</div>
+        <div id="ctxStateMobile" style="font-size:12px; color:#667;">Audio: —</div>
+      </div>
+    </div>
+    <div id="sheetBody">
+      <div class="group">
+        <div class="row">Arte</div>
+        <div class="controlRow">
+          <button id="startBtn_m" class="primary">▶ Comenzar</button>
+          <button id="stopBtn_m"  class="ghost">■ Detener Sonidos</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="row" style="margin-bottom:10px;">
+          <input id="name_m" type="text" placeholder="Escribe tu nombre" />
+        </div>
+        <div class="row">
+          <button id="shareLocationBtn_m" class="alt">Compartir Ubicación</button>
+          <button id="stopSharingBtn_m" class="danger" style="display:none;">Dejar de Compartir</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <strong>Participantes</strong>
+        <ul id="peopleList_m"></ul>
+      </div>
+    </div>
+  </section>
+
 </body>
 </html>
