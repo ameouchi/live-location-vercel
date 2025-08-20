@@ -6,8 +6,8 @@ mapboxgl.accessToken = 'pk.eyJ1IjoibGFtZW91Y2hpIiwiYSI6ImNsa3ZqdHZtMDBjbTQzcXBpN
 const map = new mapboxgl.Map({
   container: 'map',
   style: 'mapbox://styles/lameouchi/cme04okvl00be01rydkfj6r43',
-  center: [-100.3846034891744, 20.59513157871081],
-  zoom: 16
+  center: [-100.3846034891744, 20],
+  zoom: 1
 });
 
 /* ===========================================================
@@ -153,8 +153,8 @@ map.on('load', async () => {
   map.addSource('bedrock', { type:'geojson', data: bedrock });
   map.addLayer({
     id:'bedrock', type:'fill', source:'bedrock',
-    paint:{ 'fill-color':['interpolate',['linear'],['get','DN'],min,'#0000FF',mid,'#FFFFFF',max,'#FF0000'],
-            'fill-opacity':0.6, 'fill-outline-color':'#000' }
+    paint:{ 'fill-color':['interpolate',['linear'],['get','DN'],min,'#0000FF',max,'#dedeff'],
+            'fill-opacity':0.3 }
   });
 
   map.addSource('live-lines', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
