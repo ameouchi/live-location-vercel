@@ -10,6 +10,11 @@ const map = new mapboxgl.Map({
   zoom: 1
 });
 
+// Bias camera upward so features sit higher on screen
+map.on('load', () => {
+  map.setPadding({ top: 20, right: 20, bottom: 280, left: 20 });
+});
+
 /* ===========================================================
    AUDIO (iOS-safe) — unchanged logic, UI mirrors to mobile
 =========================================================== */
@@ -154,13 +159,20 @@ map.on('load', async () => {
   map.addLayer({
     id:'bedrock', type:'fill', source:'bedrock',
     paint:{ 'fill-color':['interpolate',['linear'],['get','DN'],min,'#0000FF',max,'#dedeff'],
-            'fill-opacity':0.3 }
+            'fill-opacity':0.6 }
   });
 
   map.addSource('live-lines', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
   map.addLayer({ id:'live-lines', type:'line', source:'live-lines', paint:{ 'line-color':'#FF0000', 'line-width':4 } });
 
-  if (bedrock.features?.length) map.fitBounds(turf.bbox(bedrock), { padding:20 });
+  if (bedrock.features?.length) {
+    map.fitBounds(turf.bbox(bedrock), {
+      padding: { top: 20, right: 20, bottom: 280, left: 20 }
+    });
+  }
+
+  // Make sure legend is placed correctly after initial load/layout
+  updateLegendPosition();
 });
 
 async function checkSoundZones(pt) {
@@ -348,17 +360,46 @@ window.addEventListener('pagehide', ()=>{
 });
 
 /* ===========================================================
+   LEGEND POSITIONING — always above #sheet
+=========================================================== */
+function updateLegendPosition() {
+  const legend = document.getElementById('legend');
+  if (!legend) return;
+  const sheet  = document.getElementById('sheet');
+
+  const GAP_PX   = 10;  // distance above the sheet
+  const MIN_PX   = 12;  // fallback when sheet is hidden/desktop
+
+  if (sheet && getComputedStyle(sheet).display !== 'none') {
+    const rect = sheet.getBoundingClientRect(); // accounts for transform while dragging
+    const bottom = Math.max(MIN_PX, Math.round(window.innerHeight - rect.top + GAP_PX));
+    legend.style.position = 'fixed';
+    legend.style.left = '50%';
+    legend.style.transform = 'translateX(-50%)';
+    legend.style.bottom = `${bottom}px`;
+  } else {
+    legend.style.position = 'fixed';
+    legend.style.left = '50%';
+    legend.style.transform = 'translateX(-50%)';
+    legend.style.bottom = `${MIN_PX}px`;
+  }
+}
+
+/* ===========================================================
    MOBILE SHEET BEHAVIOR (expand/collapse)
 =========================================================== */
 const sheet = document.getElementById('sheet');
 const handle = document.getElementById('sheetHandle');
 let sheetOpen = true;
+
 function setSheet(open){
   sheetOpen = open;
   // collapsed = 52px height, open = natural height
   sheet.style.transform = open ? 'translateY(0)' : 'translateY(calc(100% - 52px))';
+  updateLegendPosition(); // keep legend pinned above sheet
 }
 setSheet(true); // start open on first load
+updateLegendPosition();
 
 let startY=0, startT=0, dragging=false;
 function onStart(e){ dragging=true; startY=(e.touches?e.touches[0].clientY:e.clientY); startT=sheet.getBoundingClientRect().top; }
@@ -369,6 +410,7 @@ function onMove(e){
   const h=window.innerHeight;
   const target = Math.min(h-52, startT+dy);
   sheet.style.transform = `translateY(${Math.max(0, target)}px)`;
+  updateLegendPosition(); // live update while dragging
 }
 function onEnd(){
   if(!dragging) return;
@@ -380,6 +422,10 @@ function onEnd(){
 }
 handle.addEventListener('mousedown', onStart); document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onEnd);
 handle.addEventListener('touchstart', onStart, {passive:true}); document.addEventListener('touchmove', onMove, {passive:true}); document.addEventListener('touchend', onEnd);
+
+// Keep legend correct on viewport changes
+window.addEventListener('resize', updateLegendPosition);
+window.addEventListener('orientationchange', updateLegendPosition);
 
 /* ===========================================================
    VISIBILITY RESUME
