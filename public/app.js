@@ -16,10 +16,10 @@ map.on('load', () => {
 });
 
 /* ===========================================================
-   AUDIO (iOS-safe) — unchanged logic, UI mirrors to mobile
+   AUDIO (iOS-safe) — core helpers
 =========================================================== */
 let audioCtx = null, masterGain = null;
-const playingSources = new Set(); // stores {src, gain}
+const playingSources = new Set(); // legacy looped sources (kept for compatibility)
 const MAX_SIMULTANEOUS = 6;
 let interactionBound = false;
 
@@ -36,6 +36,7 @@ function createContextIfNeeded() {
     masterGain.gain.value = 1.0;
     masterGain.connect(audioCtx.destination);
 
+    // tiny keep-alive to reduce iOS suspends
     const keepAliveOsc = audioCtx.createOscillator();
     const keepAliveGain = audioCtx.createGain();
     keepAliveOsc.frequency.value = 30;
@@ -69,6 +70,7 @@ bindFirstInteractionUnlock();
 async function strongUnlock() {
   createContextIfNeeded();
 
+  // MediaElement trick + short osc ping to unlock on mobile Safari
   const el = document.createElement('audio');
   el.src = '/zone_sound1.mp3'; el.preload = 'auto'; el.crossOrigin = 'anonymous'; el.playsInline = true; el.volume = 0.05;
   document.body.appendChild(el);
@@ -87,6 +89,7 @@ async function strongUnlock() {
   setTimeout(()=>{ try{el.pause()}catch{} el.src=''; el.remove(); }, 1500);
 }
 
+/* (Legacy) decode queue — not used by Geiger, safe to keep */
 const decodeQueue = []; let decoding = false;
 function loadSoundQueued(url) { return new Promise((resolve)=>{ decodeQueue.push({url,resolve}); processDecodeQueue(); }); }
 async function processDecodeQueue() {
@@ -105,6 +108,7 @@ async function processDecodeQueue() {
 }
 async function loadSound(url){ createContextIfNeeded(); return loadSoundQueued(url); }
 
+// Legacy loop API (not used now, but referenced by buttons)
 function startZoneSound(buffer) {
   if (!buffer) return null;
   if (playingSources.size >= MAX_SIMULTANEOUS) {
@@ -132,12 +136,87 @@ function stopHandle(handle){
     setTimeout(()=>{ try{ handle.src.stop(0); handle.src.disconnect(); handle.gain.disconnect(); } catch{} playingSources.delete(handle); },130);
   }catch{}
 }
-function stopAllSounds(){ for (const h of Array.from(playingSources)) stopHandle(h); }
+function stopAllSounds(){
+  try{
+    for (const h of Array.from(playingSources)) {
+      try { h.gain?.gain?.setValueAtTime?.(0, audioCtx?.currentTime || 0); } catch {}
+      try { h.src?.stop?.(0); } catch {}
+      try { h.src?.disconnect?.(); } catch {}
+      try { h.gain?.disconnect?.(); } catch {}
+      playingSources.delete(h);
+    }
+  }catch{}
+}
 
 /* ===========================================================
-   MAP / DATA / SOUND
+   DETERMINISTIC GEIGER CLICKS (rate ∝ DN)
+   - DN range expected ~ [-11 .. -1]
+   - Lower DN (closer to dataset MIN) => higher click rate
 =========================================================== */
-let bedrockZones=[], zoneFlags=[], audioBuffers=[], sources=[], zoneBBoxes=[];
+const RATE_MIN_HZ = 1.0;   // slowest click rate (near DN max ≈ -1)
+const RATE_MAX_HZ = 18.0;  // fastest click rate (near DN min ≈ -11)
+const RATE_GAMMA  = 1.15;  // curve shaping (1 = linear; >1 ramps faster near DN min)
+
+// Map DN to clicks/second: t=0 at DN max (-1), t=1 at DN min (-11)
+function dnToRateHz(dn, dnMin, dnMax){
+  const tRaw = (dn - dnMax) / (dnMin - dnMax);
+  const t = Math.min(1, Math.max(0, tRaw));
+  const shaped = Math.pow(t, RATE_GAMMA);
+  return RATE_MIN_HZ + shaped * (RATE_MAX_HZ - RATE_MIN_HZ);
+}
+
+// One Geiger "click" (short filtered-noise burst)
+function geigerClick(vol = 0.14){
+  if (!audioCtx) return;
+  const dur = 0.022; // ~22ms burst
+  const sr  = audioCtx.sampleRate;
+  const buf = audioCtx.createBuffer(1, Math.ceil(sr*dur), sr);
+  const ch  = buf.getChannelData(0);
+  for (let i=0;i<ch.length;i++){ ch[i] = (Math.random()*2 - 1); } // white noise
+
+  const src = audioCtx.createBufferSource(); src.buffer = buf;
+
+  // bandpass ~2kHz for classic Geiger timbre
+  const bp  = audioCtx.createBiquadFilter(); bp.type = 'bandpass';
+  bp.frequency.value = 1800 + Math.random()*1200; // small variance
+  bp.Q.value = 8;
+
+  const g = audioCtx.createGain();
+  const now = audioCtx.currentTime;
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(vol, now + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.020);
+
+  src.connect(bp).connect(g).connect(masterGain || audioCtx.destination);
+  src.start(now);
+  src.stop(now + 0.03);
+}
+
+// Per-zone deterministic timers
+const cellTimers = []; // [{ id:number, hz:number }] parallel to bedrockZones
+
+function startCellClicks(i, dn){
+  createContextIfNeeded();
+  const hz = dnToRateHz(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
+  const periodMs = Math.max(20, 1000 / Math.max(0.001, hz));
+
+  stopCellClicks(i); // reset if exists
+  const id = setInterval(()=> geigerClick(0.14), periodMs);
+  cellTimers[i] = { id, hz };
+}
+function stopCellClicks(i){
+  const t = cellTimers[i];
+  if (t && t.id){ clearInterval(t.id); }
+  cellTimers[i] = null;
+}
+function stopAllCellClicks(){
+  for (let i = 0; i < cellTimers.length; i++){ stopCellClicks(i); }
+}
+
+/* ===========================================================
+   MAP / DATA
+=========================================================== */
+let bedrockZones=[], zoneFlags=[], zoneBBoxes=[];
 let drawnCoords=[], isDrawing=false;
 
 map.on('load', async () => {
@@ -148,18 +227,43 @@ map.on('load', async () => {
   zoneBBoxes = bedrockZones.map(f => turf.bbox(f));
 
   const dns = bedrockZones.map(f => f?.properties?.DN).filter(Number.isFinite);
-  const [min,max] = dns.length ? [Math.min(...dns), Math.max(...dns)] : [0,1];
-  const mid = (min+max)/2;
+  const [min,max] = dns.length ? [Math.min(...dns), Math.max(...dns)] : [-11,-1]; // expected [-11 .. -1]
 
-  audioBuffers = new Array(bedrockZones.length).fill(null);
+  // Save DN range for the audio mapping
+  map.__DN_MIN__ = min;
+  map.__DN_MAX__ = max;
+
+  // Make timers/flags parallel to features
+  cellTimers.length = bedrockZones.length;
   zoneFlags   = new Array(bedrockZones.length).fill(false);
-  sources     = new Array(bedrockZones.length).fill(null);
+
+  /* ---------- MAGMA GRADIENT SETUP (INVERTED) ---------- */
+  const INVERT_SCALE = true;
+
+  const MAGMA = [
+    '#000004','#1b0c41','#4f0c6b','#781c6d',
+    '#a02c60','#c43c4e','#e16462','#f2844b',
+    '#fca636','#fcce25'
+  ];
+  function rampStops(minVal, maxVal, colors){
+    const out = [];
+    for (let i=0;i<colors.length;i++){
+      const t = i / (colors.length - 1);
+      out.push(minVal + t*(maxVal - minVal), colors[i]);
+    }
+    return out;
+  }
+  const palette = INVERT_SCALE ? MAGMA.slice().reverse() : MAGMA;
+  const magmaStops = rampStops(min, max, palette);
 
   map.addSource('bedrock', { type:'geojson', data: bedrock });
   map.addLayer({
     id:'bedrock', type:'fill', source:'bedrock',
-    paint:{ 'fill-color':['interpolate',['linear'],['get','DN'],min,'#0000FF',max,'#dedeff'],
-            'fill-opacity':0.6 }
+    paint:{
+      'fill-color': ['interpolate', ['linear'], ['get','DN'], ...magmaStops],
+      'fill-opacity': 0.75,
+      'fill-outline-color': 'rgba(255,255,255,0.25)'
+    }
   });
 
   map.addSource('live-lines', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
@@ -171,7 +275,13 @@ map.on('load', async () => {
     });
   }
 
-  // Make sure legend is placed correctly after initial load/layout
+  // Optional legend ramp to match inverted palette direction
+  const legend = document.getElementById('legend');
+  if (legend){
+    legend.style.background = `linear-gradient(to left, ${MAGMA.join(',')})`;
+    legend.style.border = '1px solid rgba(255,255,255,0.35)';
+  }
+
   updateLegendPosition();
 });
 
@@ -183,33 +293,49 @@ async function checkSoundZones(pt) {
     const [minX,minY,maxX,maxY] = zoneBBoxes[i] || [];
     const [x,y] = pt.geometry.coordinates;
     if (zoneBBoxes[i] && (x<minX || x>maxX || y<minY || y>maxY)){
-      if (zoneFlags[i]) { if (sources[i]) { stopHandle(sources[i]); sources[i]=null; } zoneFlags[i]=false; }
+      if (zoneFlags[i]) { stopCellClicks(i); zoneFlags[i]=false; }
       continue;
     }
 
     const isInside = turf.booleanPointInPolygon(pt, feature);
 
     if (isInside && !zoneFlags[i]) {
-      if (!audioBuffers[i]) {
-        const dn = feature.properties?.DN;
-        if (dn != null) audioBuffers[i] = await loadSound(`/zone_sound${dn}.mp3`);
-      }
-      if (audioBuffers[i]) {
-        const h = startZoneSound(audioBuffers[i]);
-        if (h){ sources[i]=h; zoneFlags[i]=true; }
+      const dn = feature.properties?.DN;
+      if (Number.isFinite(dn)) {
+        await ensureAudioUnlocked();
+        startCellClicks(i, dn); // rate depends on DN (deterministic)
+        zoneFlags[i] = true;
       }
     } else if (!isInside && zoneFlags[i]) {
-      if (sources[i]) { stopHandle(sources[i]); sources[i]=null; }
-      zoneFlags[i]=false;
+      stopCellClicks(i);
+      zoneFlags[i] = false;
     }
   }
 }
 
+/* Robust live update (avoids JSON parse when server returns HTML) */
 async function updateMap() {
   try {
-    const res = await fetch('/api/geo');
-    const data = await res.json();
-    const src = map.getSource('live-lines'); if (src) src.setData(data);
+    const res = await fetch('/api/geo', { cache:'no-store' });
+
+    if (!res.ok) {
+      console.warn('GET /api/geo failed:', res.status, res.statusText);
+      const src = map.getSource('live-lines');
+      if (src) src.setData({ type:'FeatureCollection', features:[] });
+      return;
+    }
+
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    let data;
+    if (ct.includes('application/json')) {
+      data = await res.json();
+    } else {
+      console.warn('GET /api/geo returned non-JSON content-type:', ct);
+      data = { type:'FeatureCollection', features:[] };
+    }
+
+    const src = map.getSource('live-lines');
+    if (src) src.setData(data);
 
     // People lists (desktop + mobile)
     const names = new Set((data.features||[]).map(f => f.properties?.name).filter(Boolean));
@@ -220,6 +346,7 @@ async function updateMap() {
     renderList(document.getElementById('peopleList'));
     renderList(document.getElementById('peopleList_m'));
 
+    // Trigger Geiger checks at latest point of each line
     (data.features||[]).forEach(feature => {
       const coords = feature?.geometry?.coordinates;
       if (coords && coords.length) {
@@ -228,7 +355,12 @@ async function updateMap() {
         checkSoundZones(pt);
       }
     });
-  } catch (err) { console.error('Error updating live data', err); }
+
+  } catch (err) {
+    console.error('Error updating live data', err);
+    const src = map.getSource('live-lines');
+    if (src) src.setData({ type:'FeatureCollection', features:[] });
+  }
 }
 
 /* Draw tool */
@@ -242,7 +374,8 @@ document.getElementById('drawBtn').onclick  = () => { isDrawing=true; drawnCoord
 document.getElementById('clearBtn').onclick = () => {
   isDrawing=false; drawnCoords=[];
   const src = map.getSource('live-lines'); if (src) src.setData({ type:'FeatureCollection', features:[] });
-  stopAllSounds();
+  stopAllCellClicks(); // stop DN-driven clicks
+  stopAllSounds();     // stop any legacy loops
 };
 
 async function updateSimulation(){
@@ -258,6 +391,7 @@ async function updateSimulation(){
 let mainTimer=null;
 function startMain(){
   strongUnlock().then(()=>{
+    // optional legacy preloads; not required for clicks
     ['/zone_sound1.mp3','/zone_sound2.mp3','/zone_sound3.mp3'].forEach(loadSound);
     if (mainTimer) return;
     let lastResume=0;
@@ -270,7 +404,11 @@ function startMain(){
     }, 1200);
   });
 }
-function stopMain(){ stopAllSounds(); if (mainTimer){ clearInterval(mainTimer); mainTimer=null; } }
+function stopMain(){
+  stopAllCellClicks();
+  stopAllSounds();
+  if (mainTimer){ clearInterval(mainTimer); mainTimer=null; }
+}
 
 function enableAudio(){ strongUnlock().then(()=>alert('Sound enabled. If still silent on iPhone, set Ring switch to RING and raise volume.')); }
 async function testMp3(){
@@ -357,6 +495,7 @@ elStopSM?.addEventListener('click', ()=>stopSharing(elNameM, elShareM, elStopSM)
 
 window.addEventListener('pagehide', ()=>{
   try{ navigator.sendBeacon?.('/api/geo', JSON.stringify({ name:(elName?.value||elNameM?.value||'').trim(), stop:true, timestamp:Date.now() })); }catch{}
+  stopAllCellClicks(); // ensure timers stop when navigating away
 });
 
 /* ===========================================================
@@ -405,7 +544,7 @@ let startY=0, startT=0, dragging=false;
 function onStart(e){ dragging=true; startY=(e.touches?e.touches[0].clientY:e.clientY); startT=sheet.getBoundingClientRect().top; }
 function onMove(e){
   if(!dragging) return;
-  const y=(e.touches?e.touches[0].clientY:e.clientY);
+  const y = e.touches ? e.touches[0].clientY : e.clientY;
   const dy=Math.max(0, y-startY);
   const h=window.innerHeight;
   const target = Math.min(h-52, startT+dy);
