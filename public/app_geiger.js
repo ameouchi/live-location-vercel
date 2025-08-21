@@ -16,10 +16,10 @@ map.on('load', () => {
 });
 
 /* ===========================================================
-   AUDIO (iOS-safe) — core helpers
+   AUDIO (iOS-safe) — unchanged logic, UI mirrors to mobile
 =========================================================== */
 let audioCtx = null, masterGain = null;
-const playingSources = new Set(); // active loop handles
+const playingSources = new Set(); // stores {src, gain}
 const MAX_SIMULTANEOUS = 6;
 let interactionBound = false;
 
@@ -36,7 +36,6 @@ function createContextIfNeeded() {
     masterGain.gain.value = 1.0;
     masterGain.connect(audioCtx.destination);
 
-    // tiny keep-alive to reduce iOS suspensions
     const keepAliveOsc = audioCtx.createOscillator();
     const keepAliveGain = audioCtx.createGain();
     keepAliveOsc.frequency.value = 30;
@@ -70,7 +69,6 @@ bindFirstInteractionUnlock();
 async function strongUnlock() {
   createContextIfNeeded();
 
-  // MediaElement trick + short osc ping to unlock on mobile Safari
   const el = document.createElement('audio');
   el.src = '/zone_sound1.mp3'; el.preload = 'auto'; el.crossOrigin = 'anonymous'; el.playsInline = true; el.volume = 0.05;
   document.body.appendChild(el);
@@ -89,9 +87,6 @@ async function strongUnlock() {
   setTimeout(()=>{ try{el.pause()}catch{} el.src=''; el.remove(); }, 1500);
 }
 
-/* ===========================================================
-   BUFFER LOADING & LOOPED SOURCES
-=========================================================== */
 const decodeQueue = []; let decoding = false;
 function loadSoundQueued(url) { return new Promise((resolve)=>{ decodeQueue.push({url,resolve}); processDecodeQueue(); }); }
 async function processDecodeQueue() {
@@ -137,256 +132,57 @@ function stopHandle(handle){
     setTimeout(()=>{ try{ handle.src.stop(0); handle.src.disconnect(); handle.gain.disconnect(); } catch{} playingSources.delete(handle); },130);
   }catch{}
 }
-function stopAllSounds(){
-  try{
-    for (const h of Array.from(playingSources)) {
-      try { h.gain?.gain?.setValueAtTime?.(0, audioCtx?.currentTime || 0); } catch {}
-      try { h.src?.stop?.(0); } catch {}
-      try { h.src?.disconnect?.(); } catch {}
-      try { h.gain?.disconnect?.(); } catch {}
-      playingSources.delete(h);
-    }
-  }catch{}
-}
+function stopAllSounds(){ for (const h of Array.from(playingSources)) stopHandle(h); }
 
 /* ===========================================================
-   DETERMINISTIC GEIGER CLICKS (rate ∝ DN)
+   MAP / DATA / SOUND
 =========================================================== */
-const RATE_MIN_HZ = 1.0;   // slowest click rate (near DN max ≈ -1)
-const RATE_MAX_HZ = 18.0;  // fastest click rate (near DN min ≈ -11)
-const RATE_GAMMA  = 1.15;  // curve shaping
-
-function dnToRateHz(dn, dnMin, dnMax){
-  const tRaw = (dn - dnMax) / (dnMin - dnMax); // 0 at max, 1 at min
-  const t = Math.min(1, Math.max(0, tRaw));
-  const shaped = Math.pow(t, RATE_GAMMA);
-  return RATE_MIN_HZ + shaped * (RATE_MAX_HZ - RATE_MIN_HZ);
-}
-
-function geigerClick(vol = 0.14){
-  if (!audioCtx) return;
-  const dur = 0.022; // ~22ms
-  const sr  = audioCtx.sampleRate;
-  const buf = audioCtx.createBuffer(1, Math.ceil(sr*dur), sr);
-  const ch  = buf.getChannelData(0);
-  for (let i=0;i<ch.length;i++){ ch[i] = (Math.random()*2 - 1); } // white noise
-
-  const src = audioCtx.createBufferSource(); src.buffer = buf;
-
-  const bp  = audioCtx.createBiquadFilter(); // bandpass ~2kHz
-  bp.type = 'bandpass';
-  bp.frequency.value = 1800 + Math.random()*1200;
-  bp.Q.value = 8;
-
-  const g = audioCtx.createGain();
-  const now = audioCtx.currentTime;
-  g.gain.setValueAtTime(0.0001, now);
-  g.gain.exponentialRampToValueAtTime(vol, now + 0.004);
-  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.020);
-
-  src.connect(bp).connect(g).connect(masterGain || audioCtx.destination);
-  src.start(now);
-  src.stop(now + 0.03);
-}
-
-// Per-zone deterministic timers for Geiger mode
-const cellTimers = []; // [{ id:number, hz:number, dn:number }]
-function startCellClicks(i, dn){
-  createContextIfNeeded();
-  const hz = dnToRateHz(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
-  const periodMs = Math.max(20, 1000 / Math.max(0.001, hz));
-  stopCellClicks(i);
-  const id = setInterval(()=> geigerClick(0.14), periodMs);
-  cellTimers[i] = { id, hz, dn };
-  console.info(`[AUDIO] Zone ${i} (DN ${dn}) → Geiger ${hz.toFixed(2)} Hz`);
-}
-function stopCellClicks(i){
-  const t = cellTimers[i];
-  if (t && t.id){ clearInterval(t.id); }
-  cellTimers[i] = null;
-}
-function stopAllCellClicks(){
-  for (let i = 0; i < cellTimers.length; i++){ stopCellClicks(i); }
-}
-
-/* ===========================================================
-   SOUND MODE TOGGLE (Loops ↔ Geiger) with 11 MP3s
-=========================================================== */
-const SOUND_MODES = { LOOPS:'LOOPS', GEIGER:'GEIGER' };
-let SOUND_MODE = SOUND_MODES.GEIGER; // default
-
-const SOUND_FILE_COUNT = 11; // use ALL eleven files
-
-// Map DN ([-11..-1]) → index 1..11 (inclusive)
-function dnToSoundIndex(dn, dnMin = -11, dnMax = -1){
-  const t = Math.min(1, Math.max(0, (dn - dnMin) / (dnMax - dnMin))); // [0..1]
-  return 1 + Math.round(t * (SOUND_FILE_COUNT - 1)); // inclusive
-}
-
-// Global cache so each MP3 loads once
-const soundCache = new Map(); // idx -> AudioBuffer|null
-async function getSoundBuffer(idx){
-  if (soundCache.has(idx)) return soundCache.get(idx);
-  const url = `/zone_sound${idx}.mp3`;
-  const buf = await loadSound(url);
-  soundCache.set(idx, buf);
-  return buf;
-}
-
-let loopHandles = [], loopMeta = []; // per-zone handle/meta
-
-async function startLoopsForIndex(i, dn){
-  const idx = dnToSoundIndex(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
-  const url = `/zone_sound${idx}.mp3`;
-  const buf = await getSoundBuffer(idx);
-  if (buf) {
-    const h = startZoneSound(buf);
-    loopHandles[i] = h;
-    loopMeta[i] = { idx, url, dn };
-    console.info(`[AUDIO] Zone ${i} (DN ${dn}) → ${url}`);
-  }
-}
-function stopLoopsForIndex(i){
-  const h = loopHandles[i];
-  if (h){ try{ stopHandle(h); }catch{} }
-  loopHandles[i]=null;
-  loopMeta[i]=null;
-}
-
-function stopAllModes(){
-  stopAllCellClicks();
-  for (let i=0;i<loopHandles.length;i++) stopLoopsForIndex(i);
-  stopAllSounds();
-}
-
-function setSoundMode(mode){
-  if (mode === SOUND_MODE) return;
-  SOUND_MODE = mode;
-  const btn = document.getElementById('toggleSoundModeBtn');
-  if (btn) btn.textContent = SOUND_MODE === SOUND_MODES.GEIGER ? 'GEIGER' : 'LOOPS';
-  stopAllModes();
-  if (zoneFlags?.length){ for (let i=0;i<zoneFlags.length;i++) zoneFlags[i]=false; }
-  updateSimulation();
-}
-function toggleSoundMode(){
-  setSoundMode(SOUND_MODE === SOUND_MODES.GEIGER ? SOUND_MODES.LOOPS : SOUND_MODES.GEIGER);
-}
-function ensureModeButton(){
-  // Use existing .chip (top-left) if present; otherwise create one
-  let chip = document.querySelector('.chip');
-  if (!chip){
-    chip = document.createElement('div');
-    chip.className = 'chip';
-    chip.style.position='absolute'; chip.style.top='12px'; chip.style.left='12px'; chip.style.zIndex='999';
-    document.body.appendChild(chip);
-  }
-  let btn = document.getElementById('toggleSoundModeBtn');
-  if (!btn){
-    btn = document.createElement('button');
-    btn.id = 'toggleSoundModeBtn';
-    btn.className = 'ghost';
-    btn.addEventListener('click', toggleSoundMode);
-    chip.appendChild(btn);
-  }
-  btn.textContent = SOUND_MODE === SOUND_MODES.GEIGER ? 'GEIGER' : 'LOOPS';
-}
-
-/* ===========================================================
-   ACTIVE-ZONE RECONCILER (supports multiple people/points)
-=========================================================== */
-function startZoneByIndex(i){
-  const dn = bedrockZones[i]?.properties?.DN;
-  if (!Number.isFinite(dn)) return;
-  if (SOUND_MODE === SOUND_MODES.GEIGER) startCellClicks(i, dn);
-  else startLoopsForIndex(i, dn);
-  zoneFlags[i] = true;
-}
-function stopZoneByIndex(i){
-  if (SOUND_MODE === SOUND_MODES.GEIGER) stopCellClicks(i);
-  else stopLoopsForIndex(i);
-  zoneFlags[i] = false;
-}
-
-function computeZonesForPoint(pt, outSet){
-  const [x,y] = pt.geometry.coordinates;
-  for (let i=0; i<bedrockZones.length; i++){
-    const bbox = zoneBBoxes[i];
-    if (bbox && bbox.length === 4){
-      const [minX,minY,maxX,maxY] = bbox;
-      if (x<minX || x>maxX || y<minY || y>maxY) continue; // quick reject
-    }
-    try{
-      if (turf.booleanPointInPolygon(pt, bedrockZones[i], { ignoreBoundary: true })) {
-        outSet.add(i);
-      }
-    } catch {}
-  }
-}
-
-function reconcileActiveZones(activeSet){
-  for (let i=0; i<bedrockZones.length; i++){
-    const shouldBeOn = activeSet.has(i);
-    if (shouldBeOn && !zoneFlags[i]) startZoneByIndex(i);
-    else if (!shouldBeOn && zoneFlags[i]) stopZoneByIndex(i);
-  }
-}
-
-async function updateActiveZonesFromPoints(points){
-  await ensureAudioUnlocked();
-  const active = new Set();
-  for (const pt of points) computeZonesForPoint(pt, active);
-  reconcileActiveZones(active);
-}
-
-/* ===========================================================
-   MAP / DATA
-=========================================================== */
-let bedrockZones=[], zoneFlags=[], zoneBBoxes=[];
+let bedrockZones=[], zoneFlags=[], audioBuffers=[], sources=[], zoneBBoxes=[];
 let drawnCoords=[], isDrawing=false;
 
 map.on('load', async () => {
-  ensureModeButton();
-
   const loadGeo = async (file) => (await fetch(file)).json();
+
   const bedrock = await loadGeo('acequia.geojson');
   bedrockZones = bedrock.features || [];
   zoneBBoxes = bedrockZones.map(f => turf.bbox(f));
 
   const dns = bedrockZones.map(f => f?.properties?.DN).filter(Number.isFinite);
-  const [min,max] = dns.length ? [Math.min(...dns), Math.max(...dns)] : [-11,-1]; // expected range
+  const [min,max] = dns.length ? [Math.min(...dns), Math.max(...dns)] : [0,1];
 
-  // Save DN range for audio mapping
-  map.__DN_MIN__ = min;
-  map.__DN_MAX__ = max;
+  /* ---------- MAGMA GRADIENT SETUP ---------- */
+/* ---------- MAGMA GRADIENT SETUP (INVERTED) ---------- */
+const INVERT_SCALE = true; // set false to go back to normal
 
-  // Make arrays parallel to features
-  cellTimers.length = bedrockZones.length;
-  loopHandles  = new Array(bedrockZones.length).fill(null);
-  loopMeta     = new Array(bedrockZones.length).fill(null);
-  zoneFlags    = new Array(bedrockZones.length).fill(false);
+const MAGMA = [
+  '#000004','#1b0c41','#4f0c6b','#781c6d',
+  '#a02c60','#c43c4e','#e16462','#f2844b',
+  '#fca636','#fcce25'
+];
 
-  /* ---------- MAGMA GRADIENT SETUP (INVERTED) ---------- */
-  const INVERT_SCALE = true;
-  const MAGMA = [
-    '#000004','#1b0c41','#4f0c6b','#781c6d',
-    '#a02c60','#c43c4e','#e16462','#f2844b',
-    '#fca636','#fcce25'
-  ];
-  function rampStops(minVal, maxVal, colors){
-    const out = [];
-    for (let i=0;i<colors.length;i++){
-      const t = i / (colors.length - 1);
-      out.push(minVal + t*(maxVal - minVal), colors[i]);
-    }
-    return out;
+// Build [value,color,value,color,...] across min..max
+function rampStops(minVal, maxVal, colors){
+  const out = [];
+  for (let i=0;i<colors.length;i++){
+    const t = i / (colors.length - 1);
+    out.push(minVal + t*(maxVal - minVal), colors[i]);
   }
-  const palette = INVERT_SCALE ? MAGMA.slice().reverse() : MAGMA;
-  const magmaStops = rampStops(min, max, palette);
+  return out;
+}
+
+const palette = INVERT_SCALE ? MAGMA.slice().reverse() : MAGMA;
+const magmaStops = rampStops(min, max, palette);
+
+
+  audioBuffers = new Array(bedrockZones.length).fill(null);
+  zoneFlags   = new Array(bedrockZones.length).fill(false);
+  sources     = new Array(bedrockZones.length).fill(null);
 
   map.addSource('bedrock', { type:'geojson', data: bedrock });
   map.addLayer({
     id:'bedrock', type:'fill', source:'bedrock',
     paint:{
+      // DN → magma ramp
       'fill-color': ['interpolate', ['linear'], ['get','DN'], ...magmaStops],
       'fill-opacity': 0.75,
       'fill-outline-color': 'rgba(255,255,255,0.25)'
@@ -402,41 +198,52 @@ map.on('load', async () => {
     });
   }
 
-  // Optional legend ramp to match inverted palette direction
+  // Optional: color the legend bar with magma
   const legend = document.getElementById('legend');
   if (legend){
     legend.style.background = `linear-gradient(to left, ${MAGMA.join(',')})`;
     legend.style.border = '1px solid rgba(255,255,255,0.35)';
   }
 
+  // Make sure legend is placed correctly after initial load/layout
   updateLegendPosition();
 });
 
-/* ===========================================================
-   LIVE UPDATE
-=========================================================== */
+async function checkSoundZones(pt) {
+  for (let i=0; i<bedrockZones.length; i++){
+    const feature = bedrockZones[i];
+
+    // bbox quick reject
+    const [minX,minY,maxX,maxY] = zoneBBoxes[i] || [];
+    const [x,y] = pt.geometry.coordinates;
+    if (zoneBBoxes[i] && (x<minX || x>maxX || y<minY || y>maxY)){
+      if (zoneFlags[i]) { if (sources[i]) { stopHandle(sources[i]); sources[i]=null; } zoneFlags[i]=false; }
+      continue;
+    }
+
+    const isInside = turf.booleanPointInPolygon(pt, feature);
+
+    if (isInside && !zoneFlags[i]) {
+      if (!audioBuffers[i]) {
+        const dn = feature.properties?.DN;
+        if (dn != null) audioBuffers[i] = await loadSound(`/zone_sound${dn}.mp3`);
+      }
+      if (audioBuffers[i]) {
+        const h = startZoneSound(audioBuffers[i]);
+        if (h){ sources[i]=h; zoneFlags[i]=true; }
+      }
+    } else if (!isInside && zoneFlags[i]) {
+      if (sources[i]) { stopHandle(sources[i]); sources[i]=null; }
+      zoneFlags[i]=false;
+    }
+  }
+}
+
 async function updateMap() {
   try {
-    const res = await fetch('/api/geo', { cache:'no-store' });
-
-    if (!res.ok) {
-      console.warn('GET /api/geo failed:', res.status, res.statusText);
-      const src = map.getSource('live-lines');
-      if (src) src.setData({ type:'FeatureCollection', features:[] });
-      return;
-    }
-
-    const ct = (res.headers.get('content-type') || '').toLowerCase();
-    let data;
-    if (ct.includes('application/json')) {
-      data = await res.json();
-    } else {
-      console.warn('GET /api/geo returned non-JSON content-type:', ct);
-      data = { type:'FeatureCollection', features:[] };
-    }
-
-    const src = map.getSource('live-lines');
-    if (src) src.setData(data);
+    const res = await fetch('/api/geo');
+    const data = await res.json();
+    const src = map.getSource('live-lines'); if (src) src.setData(data);
 
     // People lists (desktop + mobile)
     const names = new Set((data.features||[]).map(f => f.properties?.name).filter(Boolean));
@@ -447,26 +254,18 @@ async function updateMap() {
     renderList(document.getElementById('peopleList'));
     renderList(document.getElementById('peopleList_m'));
 
-    // Build union of zones for last points of every line, reconcile once
-    const points = [];
     (data.features||[]).forEach(feature => {
       const coords = feature?.geometry?.coordinates;
       if (coords && coords.length) {
-        points.push(turf.point(coords[coords.length - 1]));
+        const lastCoord = coords[coords.length - 1];
+        const pt = turf.point(lastCoord);
+        checkSoundZones(pt);
       }
     });
-    await updateActiveZonesFromPoints(points);
-
-  } catch (err) {
-    console.error('Error updating live data', err);
-    const src = map.getSource('live-lines');
-    if (src) src.setData({ type:'FeatureCollection', features:[] });
-  }
+  } catch (err) { console.error('Error updating live data', err); }
 }
 
-/* ===========================================================
-   DRAW TOOL
-=========================================================== */
+/* Draw tool */
 map.on('click', (e) => {
   if (!isDrawing) return;
   drawnCoords.push([e.lngLat.lng, e.lngLat.lat]);
@@ -477,13 +276,14 @@ document.getElementById('drawBtn').onclick  = () => { isDrawing=true; drawnCoord
 document.getElementById('clearBtn').onclick = () => {
   isDrawing=false; drawnCoords=[];
   const src = map.getSource('live-lines'); if (src) src.setData({ type:'FeatureCollection', features:[] });
-  stopAllModes(); // stop both geiger and loops
+  stopAllSounds();
 };
 
 async function updateSimulation(){
   if (!drawnCoords.length) return;
   const pt = turf.point(drawnCoords[drawnCoords.length-1]);
-  await updateActiveZonesFromPoints([pt]);
+  await ensureAudioUnlocked();
+  await checkSoundZones(pt);
 }
 
 /* ===========================================================
@@ -492,8 +292,7 @@ async function updateSimulation(){
 let mainTimer=null;
 function startMain(){
   strongUnlock().then(()=>{
-    // Preload ALL 11 files once into the cache
-    for (let i=1;i<=SOUND_FILE_COUNT;i++) getSoundBuffer(i);
+    ['/zone_sound1.mp3','/zone_sound2.mp3','/zone_sound3.mp3'].forEach(loadSound);
     if (mainTimer) return;
     let lastResume=0;
     mainTimer=setInterval(async ()=>{
@@ -505,10 +304,7 @@ function startMain(){
     }, 1200);
   });
 }
-function stopMain(){
-  stopAllModes();
-  if (mainTimer){ clearInterval(mainTimer); mainTimer=null; }
-}
+function stopMain(){ stopAllSounds(); if (mainTimer){ clearInterval(mainTimer); mainTimer=null; } }
 
 function enableAudio(){ strongUnlock().then(()=>alert('Sound enabled. If still silent on iPhone, set Ring switch to RING and raise volume.')); }
 async function testMp3(){
@@ -528,9 +324,6 @@ document.getElementById('startBtn_m')?.addEventListener('click', startMain);
 document.getElementById('stopBtn_m') ?.addEventListener('click', stopMain);
 document.getElementById('enableAudioBtn_m')?.addEventListener('click', enableAudio);
 document.getElementById('testMp3Btn_m')   ?.addEventListener('click', testMp3);
-// Sound mode toggle hooks (desktop + mobile)
-document.getElementById('toggleSoundModeBtn')?.addEventListener('click', toggleSoundMode);
-document.getElementById('toggleSoundModeBtn_m')?.addEventListener('click', toggleSoundMode);
 
 /* Layer toggle */
 function toggleLayer(id, btnId, label) {
@@ -542,9 +335,7 @@ function toggleLayer(id, btnId, label) {
 }
 document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock','bedrockToggle','Acequia');
 
-/* ===========================================================
-   LOCATION SHARING (desktop + mobile)
-=========================================================== */
+/* Location sharing (desktop + mobile) */
 const elName   = document.getElementById('name');
 const elShare  = document.getElementById('shareLocationBtn');
 const elStopSh = document.getElementById('stopSharingBtn');
@@ -592,6 +383,7 @@ function stopSharing(nameInput, shareBtn, stopBtn){
   if (watchId!==null){ navigator.geolocation.clearWatch(watchId); watchId=null; }
   shareBtn.style.display='inline-block'; stopBtn.style.display='none'; nameInput.disabled=false;
 }
+
 elShare?.addEventListener('click', ()=>startSharing(elName, elShare, elStopSh));
 elStopSh?.addEventListener('click', ()=>stopSharing(elName, elShare, elStopSh));
 elShareM?.addEventListener('click', ()=>startSharing(elNameM, elShareM, elStopSM));
@@ -599,7 +391,6 @@ elStopSM?.addEventListener('click', ()=>stopSharing(elNameM, elShareM, elStopSM)
 
 window.addEventListener('pagehide', ()=>{
   try{ navigator.sendBeacon?.('/api/geo', JSON.stringify({ name:(elName?.value||elNameM?.value||'').trim(), stop:true, timestamp:Date.now() })); }catch{}
-  stopAllModes();
 });
 
 /* ===========================================================
@@ -610,11 +401,11 @@ function updateLegendPosition() {
   if (!legend) return;
   const sheet  = document.getElementById('sheet');
 
-  const GAP_PX   = 10;
-  const MIN_PX   = 12;
+  const GAP_PX   = 10;  // distance above the sheet
+  const MIN_PX   = 12;  // fallback when sheet is hidden/desktop
 
   if (sheet && getComputedStyle(sheet).display !== 'none') {
-    const rect = sheet.getBoundingClientRect();
+    const rect = sheet.getBoundingClientRect(); // accounts for transform while dragging
     const bottom = Math.max(MIN_PX, Math.round(window.innerHeight - rect.top + GAP_PX));
     legend.style.position = 'fixed';
     legend.style.left = '50%';
@@ -637,29 +428,30 @@ let sheetOpen = true;
 
 function setSheet(open){
   sheetOpen = open;
+  // collapsed = 52px height, open = natural height
   sheet.style.transform = open ? 'translateY(0)' : 'translateY(calc(100% - 52px))';
-  updateLegendPosition();
+  updateLegendPosition(); // keep legend pinned above sheet
 }
-setSheet(true);
+setSheet(true); // start open on first load
 updateLegendPosition();
 
 let startY=0, startT=0, dragging=false;
 function onStart(e){ dragging=true; startY=(e.touches?e.touches[0].clientY:e.clientY); startT=sheet.getBoundingClientRect().top; }
 function onMove(e){
   if(!dragging) return;
-  const y = e.touches ? e.touches[0].clientY : e.clientY;
+  const y=(e.touches?e.touches[0].clientY:e.clientY);
   const dy=Math.max(0, y-startY);
   const h=window.innerHeight;
   const target = Math.min(h-52, startT+dy);
   sheet.style.transform = `translateY(${Math.max(0, target)}px)`;
-  updateLegendPosition();
+  updateLegendPosition(); // live update while dragging
 }
 function onEnd(){
   if(!dragging) return;
   dragging=false;
   const rect=sheet.getBoundingClientRect();
   const h=window.innerHeight;
-  const opened = rect.top < h*0.6;
+  const opened = rect.top < h*0.6; // snap
   setSheet(opened);
 }
 handle.addEventListener('mousedown', onStart); document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onEnd);

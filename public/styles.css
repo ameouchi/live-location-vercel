@@ -107,7 +107,7 @@ font-family: 'Share Tech Mono', monospace !important;
   z-index: 1001; /* above map & sheet */
 }
 #legend .legend-item {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center; gap: 6px; width:95%;
 }
 #legend .legend-color {
   width: 16px; height: 16px; border: 0px solid #000; display: inline-block;
@@ -117,8 +117,9 @@ font-family: 'Share Tech Mono', monospace !important;
 /* Mobile layout */
 @media (max-width: 820px){
   #map{ inset: 0; }
+  #legend{ width:95%; }
   #sidebar{ display:none; }
-  .chip{ top: 10px; left: 10px; right:auto; }
+  .chip{ top: 10px; left: 10px; right:auto;width:95%; }
   .fab-stack{ right:10px; }
   #sheet{ display:block; }
 }
