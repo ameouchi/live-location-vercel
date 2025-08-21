@@ -528,7 +528,7 @@ document.getElementById('testMp3Btn_m')   ?.addEventListener('click', testMp3);
 document.getElementById('toggleSoundModeBtn')?.addEventListener('click', toggleSoundMode);
 document.getElementById('toggleSoundModeBtn_m')?.addEventListener('click', toggleSoundMode);
 
-/* Layer toggle helper (reused for GeoTIFF button) */
+/* Layer toggle helper (used by Acequia button) */
 function toggleLayer(id, btnId, label) {
   const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
   const newVis = vis === 'visible' ? 'none' : 'visible';
@@ -537,7 +537,7 @@ function toggleLayer(id, btnId, label) {
   if (btn) btn.textContent = `${label}: ${newVis === 'visible' ? 'ENCENDIDA' : 'APAGADA'}`;
 }
 
-/* Existing bedrock toggle */
+/* Acequia toggle */
 document.getElementById('bedrockToggle')?.addEventListener('click', () =>
   toggleLayer('bedrock','bedrockToggle','Acequia')
 );
@@ -627,52 +627,101 @@ function updateLegendPosition() {
     legend.style.bottom = `${MIN_PX}px`;
   }
 }
-
 /* ===========================================================
-   MOBILE SHEET
+   MOBILE SHEET — smooth drag & snap
 =========================================================== */
-const sheet = document.getElementById('sheet');
+const sheet  = document.getElementById('sheet');
 const handle = document.getElementById('sheetHandle');
-let sheetOpen = true;
+
+const SHEET_PEEK = 52; // visible height when closed
+let maxY = 0;          // computed per viewport
+let sheetOpen = true;  // open = translateY(0)
+let dragging = false;
+let startPointerY = 0;
+let startSheetY = 0;
+let currentY = 0;
+
+function recalcMaxY(){
+  maxY = Math.max(0, window.innerHeight - SHEET_PEEK);
+}
+
+function getSheetY(){
+  const t = getComputedStyle(sheet).transform;
+  if (!t || t === 'none') return 0;
+  // DOMMatrix gives us the translateY at m42
+  const m = new DOMMatrix(t);
+  return m.m42 || 0;
+}
+
+function setSheetY(y, withTransition){
+  sheet.style.willChange = 'transform';
+  sheet.style.transition = withTransition ? 'transform 220ms cubic-bezier(.2,.8,.2,1)' : 'none';
+  sheet.style.transform  = `translateY(${y}px)`;
+  currentY = y;
+  updateLegendPosition();
+}
 
 function setSheet(open){
   sheetOpen = open;
-  sheet.style.transform = open ? 'translateY(0)' : 'translateY(calc(100% - 52px))';
-  updateLegendPosition();
+  setSheetY(open ? 0 : maxY, true);
 }
-setSheet(true);
+
+function snapToNearest(){
+  const threshold = maxY * 0.6; // >60% => closed
+  setSheet(currentY > threshold ? false : true);
+}
+
+function onPointerDown(e){
+  dragging = true;
+  startPointerY = e.clientY ?? (e.touches && e.touches[0].clientY) ?? 0;
+  startSheetY   = getSheetY();
+  sheet.style.transition = 'none';
+  handle.setPointerCapture?.(e.pointerId);
+  e.preventDefault();
+}
+
+function onPointerMove(e){
+  if (!dragging) return;
+  const y = e.clientY ?? (e.touches && e.touches[0].clientY) ?? 0;
+  const dy = y - startPointerY;
+  // clamp between 0 (open) and maxY (closed)
+  const target = Math.min(maxY, Math.max(0, startSheetY + dy));
+  setSheetY(target, false);
+  // prevent page scroll on mobile while dragging
+  e.preventDefault();
+}
+
+function onPointerUp(e){
+  if (!dragging) return;
+  dragging = false;
+  handle.releasePointerCapture?.(e.pointerId);
+  snapToNearest();
+  e.preventDefault();
+}
+
+// Init
+recalcMaxY();
+setSheet(true); // start open
 updateLegendPosition();
 
-let startY=0, startT=0, dragging=false;
-function onStart(e){ dragging=true; startY=(e.touches?e.touches[0].clientY:e.clientY); startT=sheet.getBoundingClientRect().top; }
-function onMove(e){
-  if(!dragging) return;
-  const y = e.touches ? e.touches[0].clientY : e.clientY;
-  const dy=Math.max(0, y-startY);
-  const h=window.innerHeight;
-  const target = Math.min(h-52, startT+dy);
-  sheet.style.transform = `translateY(${Math.max(0, target)}px)`;
-  updateLegendPosition();
-}
-function onEnd(){
-  if(!dragging) return;
-  dragging=false;
-  const rect=sheet.getBoundingClientRect();
-  const h=window.innerHeight;
-  const opened = rect.top < h*0.6;
-  setSheet(opened);
-}
-handle.addEventListener('mousedown', onStart); document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onEnd);
-handle.addEventListener('touchstart', onStart, {passive:true}); document.addEventListener('touchmove', onMove, {passive:true}); document.addEventListener('touchend', onEnd);
+// Make touch panning not steal the gesture
+sheet.style.touchAction  = 'none';
+handle.style.touchAction = 'none';
 
-window.addEventListener('resize', updateLegendPosition);
-window.addEventListener('orientationchange', updateLegendPosition);
+// Pointer events (works for mouse + touch)
+handle.addEventListener('pointerdown', onPointerDown, { passive:false });
+window.addEventListener('pointermove', onPointerMove, { passive:false });
+window.addEventListener('pointerup',   onPointerUp,   { passive:false });
+window.addEventListener('pointercancel', onPointerUp, { passive:false });
 
-/* ===========================================================
-   VISIBILITY RESUME
-=========================================================== */
-document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible') { try { await ensureAudioUnlocked(); } catch {} }});
-window.addEventListener('focus', async () => { try { await ensureAudioUnlocked(); } catch {} });
+// Keep geometry in sync
+function onResize(){
+  const wasOpen = sheetOpen;
+  recalcMaxY();
+  setSheet(wasOpen); // reapply position with new maxY
+}
+window.addEventListener('resize', onResize);
+window.addEventListener('orientationchange', onResize);
 
 /* ===========================================================
    GEO-TIFF OVERLAY (resilient loader + toggle)
@@ -799,24 +848,33 @@ async function addGeoTiffLayer(){
       id: layerId,
       type: 'raster',
       source: srcId,
-      paint: { 'raster-opacity': 0.8 }
+      paint: { 'raster-opacity': 0.6 }
     };
 
-    // 🔽 Add GeoTIFF *under* the acequia layer
+    // Add GeoTIFF *under* the acequia layer
     if (map.getLayer('bedrock')) {
       map.addLayer(layerSpec, 'bedrock'); // insert before 'bedrock' → below it
     } else {
       map.addLayer(layerSpec);
-      // If 'bedrock' appears later for some reason, keep GeoTIFF at the bottom
       if (map.getLayer('bedrock')) map.moveLayer(layerId, 'bedrock');
     }
 
-    // Start hidden; hook up the toggle button if present
+    // Start hidden; custom toggle text: "Ver Geologia" / "No ver Geologia"
     map.setLayoutProperty(layerId, 'visibility', 'none');
+
     const btn = document.getElementById('geotiffToggle');
+    function setGeoBtnText(){
+      if (!btn) return;
+      const vis = map.getLayoutProperty(layerId, 'visibility') || 'visible';
+      btn.textContent = (vis === 'visible') ? 'NO VER GEOLOGÍA' : 'VER GEOLOGÍA';
+    }
     if (btn){
-      btn.onclick = () => toggleLayer(layerId, 'geotiffToggle', 'GeoTIFF');
-      btn.textContent = 'GeoTIFF: APAGADA';
+      btn.onclick = () => {
+        const vis = map.getLayoutProperty(layerId, 'visibility') || 'visible';
+        map.setLayoutProperty(layerId, 'visibility', vis === 'visible' ? 'none' : 'visible');
+        setGeoBtnText();
+      };
+      setGeoBtnText();
       btn.disabled = false;
     }
 
