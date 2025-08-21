@@ -104,13 +104,14 @@ font-family: 'Share Tech Mono', monospace !important;
   display: flex;
   gap: 18px;
   font-size: 10px;
+
   z-index: 1001; /* above map & sheet */
 }
 #legend .legend-item {
   display: flex; align-items: center; gap: 6px; width:95%;
 }
 #legend .legend-color {
-  width: 16px; height: 16px; border: 0px solid #000; display: inline-block;
+  width: 16px; height: 16px; border: 0px solid #000; display: inline-block;   opacity: 50%;
 }
 
 

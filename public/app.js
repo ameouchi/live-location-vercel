@@ -10,7 +10,6 @@ const map = new mapboxgl.Map({
   zoom: 1
 });
 
-// Bias camera upward so features sit higher on screen
 map.on('load', () => {
   map.setPadding({ top: 20, right: 20, bottom: 280, left: 20 });
 });
@@ -152,9 +151,9 @@ function stopAllSounds(){
 /* ===========================================================
    DETERMINISTIC GEIGER CLICKS (rate ∝ DN)
 =========================================================== */
-const RATE_MIN_HZ = 1.0;   // slowest click rate (near DN max ≈ -1)
-const RATE_MAX_HZ = 18.0;  // fastest click rate (near DN min ≈ -11)
-const RATE_GAMMA  = 1.15;  // curve shaping
+const RATE_MIN_HZ = 1.0;
+const RATE_MAX_HZ = 18.0;
+const RATE_GAMMA  = 1.15;
 
 function dnToRateHz(dn, dnMin, dnMax){
   const tRaw = (dn - dnMax) / (dnMin - dnMax); // 0 at max, 1 at min
@@ -165,15 +164,15 @@ function dnToRateHz(dn, dnMin, dnMax){
 
 function geigerClick(vol = 0.14){
   if (!audioCtx) return;
-  const dur = 0.022; // ~22ms
+  const dur = 0.022;
   const sr  = audioCtx.sampleRate;
   const buf = audioCtx.createBuffer(1, Math.ceil(sr*dur), sr);
   const ch  = buf.getChannelData(0);
-  for (let i=0;i<ch.length;i++){ ch[i] = (Math.random()*2 - 1); } // white noise
+  for (let i=0;i<ch.length;i++){ ch[i] = (Math.random()*2 - 1); }
 
   const src = audioCtx.createBufferSource(); src.buffer = buf;
 
-  const bp  = audioCtx.createBiquadFilter(); // bandpass ~2kHz
+  const bp  = audioCtx.createBiquadFilter();
   bp.type = 'bandpass';
   bp.frequency.value = 1800 + Math.random()*1200;
   bp.Q.value = 8;
@@ -189,8 +188,7 @@ function geigerClick(vol = 0.14){
   src.stop(now + 0.03);
 }
 
-// Per-zone deterministic timers for Geiger mode
-const cellTimers = []; // [{ id:number, hz:number, dn:number }]
+const cellTimers = [];
 function startCellClicks(i, dn){
   createContextIfNeeded();
   const hz = dnToRateHz(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
@@ -213,17 +211,15 @@ function stopAllCellClicks(){
    SOUND MODE TOGGLE (Loops ↔ Geiger) with 11 MP3s
 =========================================================== */
 const SOUND_MODES = { LOOPS:'LOOPS', GEIGER:'GEIGER' };
-let SOUND_MODE = SOUND_MODES.GEIGER; // default
+let SOUND_MODE = SOUND_MODES.GEIGER;
 
-const SOUND_FILE_COUNT = 11; // use ALL eleven files
+const SOUND_FILE_COUNT = 11;
 
-// Map DN ([-11..-1]) → index 1..11 (inclusive)
 function dnToSoundIndex(dn, dnMin = -11, dnMax = -1){
-  const t = Math.min(1, Math.max(0, (dn - dnMin) / (dnMax - dnMin))); // [0..1]
-  return 1 + Math.round(t * (SOUND_FILE_COUNT - 1)); // inclusive
+  const t = Math.min(1, Math.max(0, (dn - dnMin) / (dnMax - dnMin)));
+  return 1 + Math.round(t * (SOUND_FILE_COUNT - 1));
 }
 
-// Global cache so each MP3 loads once
 const soundCache = new Map(); // idx -> AudioBuffer|null
 async function getSoundBuffer(idx){
   if (soundCache.has(idx)) return soundCache.get(idx);
@@ -233,7 +229,7 @@ async function getSoundBuffer(idx){
   return buf;
 }
 
-let loopHandles = [], loopMeta = []; // per-zone handle/meta
+let loopHandles = [], loopMeta = [];
 
 async function startLoopsForIndex(i, dn){
   const idx = dnToSoundIndex(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
@@ -272,7 +268,6 @@ function toggleSoundMode(){
   setSoundMode(SOUND_MODE === SOUND_MODES.GEIGER ? SOUND_MODES.LOOPS : SOUND_MODES.GEIGER);
 }
 function ensureModeButton(){
-  // Use existing .chip (top-left) if present; otherwise create one
   let chip = document.querySelector('.chip');
   if (!chip){
     chip = document.createElement('div');
@@ -292,7 +287,7 @@ function ensureModeButton(){
 }
 
 /* ===========================================================
-   ACTIVE-ZONE RECONCILER (supports multiple people/points)
+   ACTIVE-ZONE RECONCILER
 =========================================================== */
 function startZoneByIndex(i){
   const dn = bedrockZones[i]?.properties?.DN;
@@ -313,7 +308,7 @@ function computeZonesForPoint(pt, outSet){
     const bbox = zoneBBoxes[i];
     if (bbox && bbox.length === 4){
       const [minX,minY,maxX,maxY] = bbox;
-      if (x<minX || x>maxX || y<minY || y>maxY) continue; // quick reject
+      if (x<minX || x>maxX || y<minY || y>maxY) continue;
     }
     try{
       if (turf.booleanPointInPolygon(pt, bedrockZones[i], { ignoreBoundary: true })) {
@@ -353,13 +348,11 @@ map.on('load', async () => {
   zoneBBoxes = bedrockZones.map(f => turf.bbox(f));
 
   const dns = bedrockZones.map(f => f?.properties?.DN).filter(Number.isFinite);
-  const [min,max] = dns.length ? [Math.min(...dns), Math.max(...dns)] : [-11,-1]; // expected range
+  const [min,max] = dns.length ? [Math.min(...dns), Math.max(...dns)] : [-11,-1];
 
-  // Save DN range for audio mapping
   map.__DN_MIN__ = min;
   map.__DN_MAX__ = max;
 
-  // Make arrays parallel to features
   cellTimers.length = bedrockZones.length;
   loopHandles  = new Array(bedrockZones.length).fill(null);
   loopMeta     = new Array(bedrockZones.length).fill(null);
@@ -410,6 +403,9 @@ map.on('load', async () => {
   }
 
   updateLegendPosition();
+
+  // --- Add GeoTIFF layer (starts hidden) ---
+  await addGeoTiffLayer(); // safe to call even if button not present yet
 });
 
 /* ===========================================================
@@ -477,7 +473,7 @@ document.getElementById('drawBtn').onclick  = () => { isDrawing=true; drawnCoord
 document.getElementById('clearBtn').onclick = () => {
   isDrawing=false; drawnCoords=[];
   const src = map.getSource('live-lines'); if (src) src.setData({ type:'FeatureCollection', features:[] });
-  stopAllModes(); // stop both geiger and loops
+  stopAllModes();
 };
 
 async function updateSimulation(){
@@ -487,12 +483,11 @@ async function updateSimulation(){
 }
 
 /* ===========================================================
-   CONTROLS  (desktop and mobile mirror to same handlers)
+   CONTROLS
 =========================================================== */
 let mainTimer=null;
 function startMain(){
   strongUnlock().then(()=>{
-    // Preload ALL 11 files once into the cache
     for (let i=1;i<=SOUND_FILE_COUNT;i++) getSoundBuffer(i);
     if (mainTimer) return;
     let lastResume=0;
@@ -528,11 +523,12 @@ document.getElementById('startBtn_m')?.addEventListener('click', startMain);
 document.getElementById('stopBtn_m') ?.addEventListener('click', stopMain);
 document.getElementById('enableAudioBtn_m')?.addEventListener('click', enableAudio);
 document.getElementById('testMp3Btn_m')   ?.addEventListener('click', testMp3);
+
 // Sound mode toggle hooks (desktop + mobile)
 document.getElementById('toggleSoundModeBtn')?.addEventListener('click', toggleSoundMode);
 document.getElementById('toggleSoundModeBtn_m')?.addEventListener('click', toggleSoundMode);
 
-/* Layer toggle */
+/* Layer toggle helper (reused for GeoTIFF button) */
 function toggleLayer(id, btnId, label) {
   const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
   const newVis = vis === 'visible' ? 'none' : 'visible';
@@ -540,10 +536,14 @@ function toggleLayer(id, btnId, label) {
   const btn = document.getElementById(btnId);
   if (btn) btn.textContent = `${label}: ${newVis === 'visible' ? 'ENCENDIDA' : 'APAGADA'}`;
 }
-document.getElementById('bedrockToggle').onclick = () => toggleLayer('bedrock','bedrockToggle','Acequia');
+
+/* Existing bedrock toggle */
+document.getElementById('bedrockToggle')?.addEventListener('click', () =>
+  toggleLayer('bedrock','bedrockToggle','Acequia')
+);
 
 /* ===========================================================
-   LOCATION SHARING (desktop + mobile)
+   LOCATION SHARING
 =========================================================== */
 const elName   = document.getElementById('name');
 const elShare  = document.getElementById('shareLocationBtn');
@@ -603,7 +603,7 @@ window.addEventListener('pagehide', ()=>{
 });
 
 /* ===========================================================
-   LEGEND POSITIONING — always above #sheet
+   LEGEND POSITIONING
 =========================================================== */
 function updateLegendPosition() {
   const legend = document.getElementById('legend');
@@ -629,7 +629,7 @@ function updateLegendPosition() {
 }
 
 /* ===========================================================
-   MOBILE SHEET BEHAVIOR (expand/collapse)
+   MOBILE SHEET
 =========================================================== */
 const sheet = document.getElementById('sheet');
 const handle = document.getElementById('sheetHandle');
@@ -665,7 +665,6 @@ function onEnd(){
 handle.addEventListener('mousedown', onStart); document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onEnd);
 handle.addEventListener('touchstart', onStart, {passive:true}); document.addEventListener('touchmove', onMove, {passive:true}); document.addEventListener('touchend', onEnd);
 
-// Keep legend correct on viewport changes
 window.addEventListener('resize', updateLegendPosition);
 window.addEventListener('orientationchange', updateLegendPosition);
 
@@ -674,3 +673,165 @@ window.addEventListener('orientationchange', updateLegendPosition);
 =========================================================== */
 document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible') { try { await ensureAudioUnlocked(); } catch {} }});
 window.addEventListener('focus', async () => { try { await ensureAudioUnlocked(); } catch {} });
+
+/* ===========================================================
+   GEO-TIFF OVERLAY (resilient loader + toggle)
+=========================================================== */
+const GEO_TIFF_URL = '/geologic.tif'; // <-- must be a PUBLIC URL your browser can GET
+
+function loadScriptOnce(src){
+  return new Promise((resolve, reject)=>{
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const s = document.createElement('script');
+    s.src = src; s.async = true;
+    s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+async function headOrGet(url){
+  // Try HEAD (some hosts disallow it); fall back to GET with no-cache
+  try {
+    const r = await fetch(url, { method: 'HEAD' });
+    return { ok: r.ok, status: r.status, headers: r.headers };
+  } catch {
+    try {
+      const r = await fetch(url, { method: 'GET', cache: 'no-store' });
+      return { ok: r.ok, status: r.status, headers: r.headers };
+    } catch (e) {
+      return { ok: false, error: e };
+    }
+  }
+}
+
+let geotiffReady = false;
+async function addGeoTiffLayer(){
+  const srcId = 'geotiff-image';
+  const layerId = 'geotiff-layer';
+
+  try{
+    // Load geotiff.js (remove if you bundle it yourself)
+    await loadScriptOnce('https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.min.js');
+
+    // Quick preflight so errors are obvious
+    const probe = await headOrGet(GEO_TIFF_URL);
+    if (!probe.ok) {
+      console.error('[GeoTIFF] Fetch preflight failed', probe);
+      throw new Error(`HTTP ${probe.status || 'fetch failed'} — check URL/CORS`);
+    } else {
+      const ar = probe.headers?.get?.('accept-ranges');
+      console.log('[GeoTIFF] Preflight OK:', {
+        status: probe.status,
+        'content-type': probe.headers?.get?.('content-type'),
+        'accept-ranges': ar || '(none)'
+      });
+    }
+
+    // Try 1: fromUrl with full-file allowed (works even if Range unsupported)
+    let tiff;
+    try {
+      tiff = await GeoTIFF.fromUrl(GEO_TIFF_URL, {
+        allowFullFile: true,
+        fetchOptions: { mode: 'cors', credentials: 'omit', cache: 'no-store' }
+      });
+    } catch (e1) {
+      console.warn('[GeoTIFF] fromUrl failed, falling back to arrayBuffer:', e1);
+      // Try 2: manual fetch + fromArrayBuffer (avoids range requests entirely)
+      const res = await fetch(GEO_TIFF_URL, { cache: 'no-store', mode: 'cors' });
+      if (!res.ok) throw new Error(`GET ${res.status} ${res.statusText}`);
+      const buf = await res.arrayBuffer();
+      tiff = await GeoTIFF.fromArrayBuffer(buf);
+    }
+
+    const image = await tiff.getImage();
+    const [minX, minY, maxX, maxY] = image.getBoundingBox(); // assumes lon/lat degrees
+    const width  = image.getWidth();
+    const height = image.getHeight();
+
+    // Read interleaved; normalize to RGBA
+    let rasters = await image.readRasters({ interleave: true });
+    let spp = image.getSamplesPerPixel();
+
+    if (spp === 3){
+      const rgba = new Uint8ClampedArray(width*height*4);
+      for (let p=0,q=0; p<rgba.length; p+=4, q+=3){
+        rgba[p]   = rasters[q];
+        rgba[p+1] = rasters[q+1];
+        rgba[p+2] = rasters[q+2];
+        rgba[p+3] = 255;
+      }
+      rasters = rgba; spp = 4;
+    } else if (spp === 1){
+      const rgba = new Uint8ClampedArray(width*height*4);
+      for (let p=0,q=0; p<rgba.length; p+=4, q++){
+        const v = rasters[q] & 0xFF;
+        rgba[p] = rgba[p+1] = rgba[p+2] = v;
+        rgba[p+3] = 255;
+      }
+      rasters = rgba; spp = 4;
+    } else if (spp === 4 && !(rasters instanceof Uint8ClampedArray)){
+      rasters = new Uint8ClampedArray(rasters.buffer); // ensure correct view
+    }
+
+    // Draw to canvas (downscale if huge)
+    const MAX_DIM = 4096;
+    const scale = Math.min(1, MAX_DIM / Math.max(width, height));
+    const outW = Math.max(1, Math.round(width * scale));
+    const outH = Math.max(1, Math.round(height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = outW; canvas.height = outH;
+    const ctx = canvas.getContext('2d');
+
+    if (scale === 1){
+      ctx.putImageData(new ImageData(rasters, width, height), 0, 0);
+    } else {
+      const tmp = document.createElement('canvas');
+      tmp.width = width; tmp.height = height;
+      tmp.getContext('2d').putImageData(new ImageData(rasters, width, height), 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(tmp, 0, 0, outW, outH);
+    }
+
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    const url = URL.createObjectURL(blob);
+
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+    if (map.getSource(srcId)) map.removeSource(srcId);
+
+    map.addSource(srcId, {
+      type: 'image',
+      url,
+      coordinates: [
+        [minX, maxY], // top-left
+        [maxX, maxY], // top-right
+        [maxX, minY], // bottom-right
+        [minX, minY]  // bottom-left
+      ]
+    });
+    map.addLayer({
+      id: layerId,
+      type: 'raster',
+      source: srcId,
+      paint: { 'raster-opacity': 0.8 }
+    });
+
+    // Start hidden; hook up the toggle button if present
+    map.setLayoutProperty(layerId, 'visibility', 'none');
+    const btn = document.getElementById('geotiffToggle');
+    if (btn){
+      btn.onclick = () => toggleLayer(layerId, 'geotiffToggle', 'GeoTIFF');
+      btn.textContent = 'GeoTIFF: APAGADA';
+      btn.disabled = false;
+    }
+
+    geotiffReady = true;
+    console.log('[GeoTIFF] layer added', { bbox:[minX,minY,maxX,maxY], size:[outW,outH] });
+
+  } catch (e){
+    console.error('Failed to add GeoTIFF layer:', e);
+    const btn = document.getElementById('geotiffToggle');
+    if (btn){ btn.disabled = true; btn.textContent = 'GeoTIFF: ERROR'; }
+  }
+}
+
