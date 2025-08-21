@@ -405,7 +405,7 @@ map.on('load', async () => {
   updateLegendPosition();
 
   // --- Add GeoTIFF layer (starts hidden) ---
-  await addGeoTiffLayer(); // safe to call even if button not present yet
+  await addGeoTiffLayer(); // safe even if button not present yet
 });
 
 /* ===========================================================
@@ -690,7 +690,6 @@ function loadScriptOnce(src){
 }
 
 async function headOrGet(url){
-  // Try HEAD (some hosts disallow it); fall back to GET with no-cache
   try {
     const r = await fetch(url, { method: 'HEAD' });
     return { ok: r.ok, status: r.status, headers: r.headers };
@@ -710,24 +709,14 @@ async function addGeoTiffLayer(){
   const layerId = 'geotiff-layer';
 
   try{
-    // Load geotiff.js (remove if you bundle it yourself)
     await loadScriptOnce('https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.min.js');
 
-    // Quick preflight so errors are obvious
     const probe = await headOrGet(GEO_TIFF_URL);
     if (!probe.ok) {
       console.error('[GeoTIFF] Fetch preflight failed', probe);
       throw new Error(`HTTP ${probe.status || 'fetch failed'} — check URL/CORS`);
-    } else {
-      const ar = probe.headers?.get?.('accept-ranges');
-      console.log('[GeoTIFF] Preflight OK:', {
-        status: probe.status,
-        'content-type': probe.headers?.get?.('content-type'),
-        'accept-ranges': ar || '(none)'
-      });
     }
 
-    // Try 1: fromUrl with full-file allowed (works even if Range unsupported)
     let tiff;
     try {
       tiff = await GeoTIFF.fromUrl(GEO_TIFF_URL, {
@@ -735,8 +724,6 @@ async function addGeoTiffLayer(){
         fetchOptions: { mode: 'cors', credentials: 'omit', cache: 'no-store' }
       });
     } catch (e1) {
-      console.warn('[GeoTIFF] fromUrl failed, falling back to arrayBuffer:', e1);
-      // Try 2: manual fetch + fromArrayBuffer (avoids range requests entirely)
       const res = await fetch(GEO_TIFF_URL, { cache: 'no-store', mode: 'cors' });
       if (!res.ok) throw new Error(`GET ${res.status} ${res.statusText}`);
       const buf = await res.arrayBuffer();
@@ -744,11 +731,10 @@ async function addGeoTiffLayer(){
     }
 
     const image = await tiff.getImage();
-    const [minX, minY, maxX, maxY] = image.getBoundingBox(); // assumes lon/lat degrees
+    const [minX, minY, maxX, maxY] = image.getBoundingBox();
     const width  = image.getWidth();
     const height = image.getHeight();
 
-    // Read interleaved; normalize to RGBA
     let rasters = await image.readRasters({ interleave: true });
     let spp = image.getSamplesPerPixel();
 
@@ -770,10 +756,9 @@ async function addGeoTiffLayer(){
       }
       rasters = rgba; spp = 4;
     } else if (spp === 4 && !(rasters instanceof Uint8ClampedArray)){
-      rasters = new Uint8ClampedArray(rasters.buffer); // ensure correct view
+      rasters = new Uint8ClampedArray(rasters.buffer);
     }
 
-    // Draw to canvas (downscale if huge)
     const MAX_DIM = 4096;
     const scale = Math.min(1, MAX_DIM / Math.max(width, height));
     const outW = Math.max(1, Math.round(width * scale));
@@ -809,12 +794,22 @@ async function addGeoTiffLayer(){
         [minX, minY]  // bottom-left
       ]
     });
-    map.addLayer({
+
+    const layerSpec = {
       id: layerId,
       type: 'raster',
       source: srcId,
       paint: { 'raster-opacity': 0.8 }
-    });
+    };
+
+    // 🔽 Add GeoTIFF *under* the acequia layer
+    if (map.getLayer('bedrock')) {
+      map.addLayer(layerSpec, 'bedrock'); // insert before 'bedrock' → below it
+    } else {
+      map.addLayer(layerSpec);
+      // If 'bedrock' appears later for some reason, keep GeoTIFF at the bottom
+      if (map.getLayer('bedrock')) map.moveLayer(layerId, 'bedrock');
+    }
 
     // Start hidden; hook up the toggle button if present
     map.setLayoutProperty(layerId, 'visibility', 'none');
@@ -826,7 +821,7 @@ async function addGeoTiffLayer(){
     }
 
     geotiffReady = true;
-    console.log('[GeoTIFF] layer added', { bbox:[minX,minY,maxX,maxY], size:[outW,outH] });
+    console.log('[GeoTIFF] layer added under bedrock', { bbox:[minX,minY,maxX,maxY], size:[outW,outH] });
 
   } catch (e){
     console.error('Failed to add GeoTIFF layer:', e);
@@ -834,4 +829,3 @@ async function addGeoTiffLayer(){
     if (btn){ btn.disabled = true; btn.textContent = 'GeoTIFF: ERROR'; }
   }
 }
-
