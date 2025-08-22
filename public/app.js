@@ -480,6 +480,8 @@ map.on('load', async () => {
     legend.style.background = `linear-gradient(to left, ${MAGMA.join(',')})`;
     legend.style.border = '1px solid rgba(255,255,255,0.35)';
   }
+  
+  
 
   updateLegendPosition();
 
@@ -491,7 +493,8 @@ map.on('load', async () => {
     requestAnimationFrame(animateHead);
 
     // prefer drawn head while drawing; otherwise use live heads
-    const headsToShow = (drawnCoords.length ? [drawnCoords[0]] : liveHeadCoords);
+ const headsToShow = (drawnCoords.length ? [drawnCoords[drawnCoords.length - 1]] : liveHeadCoords);
+
 
     if (!headsToShow || !headsToShow.length) {
       map.getSource('live-head')?.setData({ type:'FeatureCollection', features:[] });
@@ -541,16 +544,20 @@ async function updateMap() {
     map.getSource('live-lines')?.setData(data);
 
     // compute head(s) from START of each live line
-    liveHeadCoords = [];
-    for (const f of (data.features || [])) {
-      const g = f && f.geometry;
-      if (!g) continue;
-      if (g.type === 'LineString' && g.coordinates?.length) {
-        liveHeadCoords.push(g.coordinates[0]);
-      } else if (g.type === 'MultiLineString' && g.coordinates?.length && g.coordinates[0]?.length) {
-        liveHeadCoords.push(g.coordinates[0][0]);
-      }
-    }
+// compute head(s) from END of each live line
+liveHeadCoords = [];
+for (const f of (data.features || [])) {
+  const g = f && f.geometry;
+  if (!g) continue;
+
+  if (g.type === 'LineString' && Array.isArray(g.coordinates) && g.coordinates.length) {
+    liveHeadCoords.push(g.coordinates[g.coordinates.length - 1]); // end
+  } else if (g.type === 'MultiLineString' && Array.isArray(g.coordinates) && g.coordinates.length) {
+    const lastPart = g.coordinates[g.coordinates.length - 1] || [];
+    if (lastPart.length) liveHeadCoords.push(lastPart[lastPart.length - 1]); // end of last part
+  }
+}
+
 
     // audio zone updates (use last points of lines)
     const points = [];
@@ -591,15 +598,17 @@ map.on('click', (e) => {
   map.getSource('live-lines')?.setData(line);
 
   // update head point at START of line
-  const head = drawnCoords[0];
-  map.getSource('live-head')?.setData({
-    type:'FeatureCollection',
-    features:[{
-      type:'Feature',
-      properties:{ pulse: 1 },
-      geometry:{ type:'Point', coordinates: head }
-    }]
-  });
+// update head point at END of line
+const tail = drawnCoords[drawnCoords.length - 1];
+map.getSource('live-head')?.setData({
+  type:'FeatureCollection',
+  features:[{
+    type:'Feature',
+    properties:{ pulse: 1 },
+    geometry:{ type:'Point', coordinates: tail }
+  }]
+});
+
 });
 
 document.getElementById('drawBtn').onclick  = () => { isDrawing=true; drawnCoords=[]; };
