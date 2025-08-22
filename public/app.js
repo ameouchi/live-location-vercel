@@ -64,7 +64,6 @@ function bindFirstInteractionUnlock() {
   document.addEventListener('pointerdown', onceUnlock, { once: true });
   document.addEventListener('touchend',  onceUnlock, { once: true });
 }
-
 bindFirstInteractionUnlock();
 
 async function strongUnlock() {
@@ -128,9 +127,7 @@ function getLoopPoints(buf, thresh = 0.0008, padSamples = 64){
     end   = Math.max(end,   j+1);
   }
 
-  // safety: if file is mostly silent, fall back to whole buffer
   if (start >= end) { start = 0; end = N; }
-
   start = Math.max(0, start - padSamples);
   end   = Math.min(N, end + padSamples);
 
@@ -139,10 +136,8 @@ function getLoopPoints(buf, thresh = 0.0008, padSamples = 64){
   return pts;
 }
 
-/* One source per unique loop (prevents phasing/beating) */
 const activeLoopByIdx = new Map(); // idx -> { handle, count }
 
-/* Start one buffer source with gapless loop points */
 function startZoneSound(buffer) {
   if (!buffer) return null;
   if (playingSources.size >= MAX_SIMULTANEOUS) {
@@ -152,12 +147,9 @@ function startZoneSound(buffer) {
   const src = audioCtx.createBufferSource();
   const g = audioCtx.createGain();
 
-  // 🔽 gapless loop window
   const { startSec, endSec, durSec } = getLoopPoints(buffer);
   src.buffer = buffer;
   src.loop = true;
-
-  // Avoid degenerate values on some browsers
   const minSpan = 0.01;
   const L = Math.max(startSec, 0);
   const R = Math.max(L + minSpan, Math.min(endSec, durSec));
@@ -321,10 +313,8 @@ function stopLoopsForIndex(i){
 
 function stopAllModes(){
   stopAllCellClicks();
-  // stop shared loops
   for (const [idx, rec] of activeLoopByIdx.entries()){ try{ stopHandle(rec.handle); }catch{} }
   activeLoopByIdx.clear();
-  // local bookkeeping
   for (let i=0;i<loopHandles.length;i++){ loopHandles[i]=null; loopMeta[i]=null; }
   stopAllSounds();
 }
@@ -463,13 +453,27 @@ map.on('load', async () => {
   map.addSource('live-lines', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
   map.addLayer({ id:'live-lines', type:'line', source:'live-lines', paint:{ 'line-color':'#FF0000', 'line-width':4 } });
 
+  /* --- pulsing head dot at start of line --- */
+  map.addSource('live-head', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
+  map.addLayer({
+    id: 'live-head',
+    type: 'circle',
+    source: 'live-head',
+    paint: {
+      'circle-radius': ['interpolate', ['linear'], ['get','pulse'], 0, 4, 1, 10],
+      'circle-color': '#ffffff',
+      'circle-stroke-color': '#ff0000',
+      'circle-stroke-width': 2,
+      'circle-opacity': ['interpolate', ['linear'], ['get','pulse'], 0, 0.25, 1, 1]
+    }
+  });
+
   if (bedrock.features?.length) {
     map.fitBounds(turf.bbox(bedrock), {
       padding: { top: 20, right: 20, bottom: 280, left: 20 }
     });
   }
 
-  // Optional legend ramp to match inverted palette direction
   const legend = document.getElementById('legend');
   if (legend){
     legend.style.background = `linear-gradient(to left, ${MAGMA.join(',')})`;
@@ -479,7 +483,24 @@ map.on('load', async () => {
   updateLegendPosition();
 
   // --- Add GeoTIFF layer (starts hidden) ---
-  await addGeoTiffLayer(); // safe even if button not present yet
+  await addGeoTiffLayer();
+
+  // --- pulse animation loop for head dot ---
+  (function animateHead(){
+    requestAnimationFrame(animateHead);
+    if (!drawnCoords.length) return; // no line → nothing to show
+    const head = drawnCoords[0];
+    const t = (performance.now() % 1000) / 1000;           // 0..1
+    const pulse = 0.5 * (1 - Math.cos(2 * Math.PI * t));   // smooth pulse
+    map.getSource('live-head')?.setData({
+      type:'FeatureCollection',
+      features:[{
+        type:'Feature',
+        properties:{ pulse },
+        geometry:{ type:'Point', coordinates: head }
+      }]
+    });
+  })();
 });
 
 /* ===========================================================
@@ -508,7 +529,6 @@ async function updateMap() {
     const src = map.getSource('live-lines');
     if (src) src.setData(data);
 
-    // People lists (desktop + mobile)
     const names = new Set((data.features||[]).map(f => f.properties?.name).filter(Boolean));
     const renderList = (ul) => {
       if (!ul) return; ul.innerHTML='';
@@ -517,7 +537,6 @@ async function updateMap() {
     renderList(document.getElementById('peopleList'));
     renderList(document.getElementById('peopleList_m'));
 
-    // Build union of zones for last points of every line, reconcile once
     const points = [];
     (data.features||[]).forEach(feature => {
       const coords = feature?.geometry?.coordinates;
@@ -539,14 +558,33 @@ async function updateMap() {
 =========================================================== */
 map.on('click', (e) => {
   if (!isDrawing) return;
+
   drawnCoords.push([e.lngLat.lng, e.lngLat.lat]);
-  const line = { type:'FeatureCollection', features:[{ type:'Feature', geometry:{ type:'LineString', coordinates: drawnCoords } }] };
-  const src = map.getSource('live-lines'); if (src) src.setData(line);
+
+  // update line
+  const line = {
+    type:'FeatureCollection',
+    features:[{ type:'Feature', geometry:{ type:'LineString', coordinates: drawnCoords } }]
+  };
+  map.getSource('live-lines')?.setData(line);
+
+  // update head point at START of line
+  const head = drawnCoords[0];
+  map.getSource('live-head')?.setData({
+    type:'FeatureCollection',
+    features:[{
+      type:'Feature',
+      properties:{ pulse: 1 }, // initial full
+      geometry:{ type:'Point', coordinates: head }
+    }]
+  });
 });
+
 document.getElementById('drawBtn').onclick  = () => { isDrawing=true; drawnCoords=[]; };
 document.getElementById('clearBtn').onclick = () => {
   isDrawing=false; drawnCoords=[];
-  const src = map.getSource('live-lines'); if (src) src.setData({ type:'FeatureCollection', features:[] });
+  map.getSource('live-lines')?.setData({ type:'FeatureCollection', features:[] });
+  map.getSource('live-head') ?.setData({ type:'FeatureCollection', features:[] });
   stopAllModes();
 };
 
@@ -586,19 +624,15 @@ async function testMp3(){
   setTimeout(()=>{ try{el.pause(); el.src='';}catch{} }, 1500);
 }
 
-/* Hook desktop buttons */
+/* Hooks */
 document.getElementById('startBtn')?.addEventListener('click', startMain);
 document.getElementById('stopBtn') ?.addEventListener('click', stopMain);
 document.getElementById('enableAudioBtn')?.addEventListener('click', enableAudio);
 document.getElementById('testMp3Btn')   ?.addEventListener('click', testMp3);
-
-/* Hook mobile sheet buttons */
 document.getElementById('startBtn_m')?.addEventListener('click', startMain);
 document.getElementById('stopBtn_m') ?.addEventListener('click', stopMain);
 document.getElementById('enableAudioBtn_m')?.addEventListener('click', enableAudio);
 document.getElementById('testMp3Btn_m')   ?.addEventListener('click', testMp3);
-
-// Sound mode toggle hooks (desktop + mobile)
 document.getElementById('toggleSoundModeBtn')?.addEventListener('click', toggleSoundMode);
 document.getElementById('toggleSoundModeBtn_m')?.addEventListener('click', toggleSoundMode);
 
@@ -709,8 +743,8 @@ const sheet  = document.getElementById('sheet');
 const handle = document.getElementById('sheetHandle');
 
 const SHEET_PEEK = 52; // visible height when closed
-let maxY = 0;          // computed per viewport
-let sheetOpen = true;  // open = translateY(0)
+let maxY = 0;
+let sheetOpen = true;
 let dragging = false;
 let startPointerY = 0;
 let startSheetY = 0;
@@ -773,20 +807,17 @@ function onPointerUp(e){
 
 // Init
 recalcMaxY();
-setSheet(true); // start open
+setSheet(true);
 updateLegendPosition();
 
-// Make touch panning not steal the gesture
 sheet.style.touchAction  = 'none';
 handle.style.touchAction = 'none';
 
-// Pointer events (works for mouse + touch)
 handle.addEventListener('pointerdown', onPointerDown, { passive:false });
 window.addEventListener('pointermove', onPointerMove, { passive:false });
 window.addEventListener('pointerup',   onPointerUp,   { passive:false });
 window.addEventListener('pointercancel', onPointerUp, { passive:false });
 
-// Keep geometry in sync
 function onResize(){
   const wasOpen = sheetOpen;
   recalcMaxY();
@@ -798,7 +829,7 @@ window.addEventListener('orientationchange', onResize);
 /* ===========================================================
    GEO-TIFF OVERLAY (resilient loader + toggle)
 =========================================================== */
-const GEO_TIFF_URL = '/geologic.tif'; // <-- must be a PUBLIC URL your browser can GET
+const GEO_TIFF_URL = '/geologic.tif';
 
 function loadScriptOnce(src){
   return new Promise((resolve, reject)=>{
@@ -909,10 +940,10 @@ async function addGeoTiffLayer(){
       type: 'image',
       url,
       coordinates: [
-        [minX, maxY], // top-left
-        [maxX, maxY], // top-right
-        [maxX, minY], // bottom-right
-        [minX, minY]  // bottom-left
+        [minX, maxY],
+        [maxX, maxY],
+        [maxX, minY],
+        [minX, minY]
       ]
     });
 
@@ -923,15 +954,13 @@ async function addGeoTiffLayer(){
       paint: { 'raster-opacity': 0.6 }
     };
 
-    // Add GeoTIFF *under* the acequia layer
     if (map.getLayer('bedrock')) {
-      map.addLayer(layerSpec, 'bedrock'); // insert before 'bedrock' → below it
+      map.addLayer(layerSpec, 'bedrock');
     } else {
       map.addLayer(layerSpec);
       if (map.getLayer('bedrock')) map.moveLayer(layerId, 'bedrock');
     }
 
-    // Start hidden; custom toggle text: "Ver Geologia" / "No ver Geologia"
     map.setLayoutProperty(layerId, 'visibility', 'none');
 
     const btn = document.getElementById('geotiffToggle');
