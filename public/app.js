@@ -343,7 +343,7 @@ map.on('load', async () => {
   ensureModeButton();
 
   const loadGeo = async (file) => (await fetch(file)).json();
-  const bedrock = await loadGeo('acequia.geojson');
+  const bedrock = await loadGeo('prueba.geojson');
   bedrockZones = bedrock.features || [];
   zoneBBoxes = bedrockZones.map(f => turf.bbox(f));
 
