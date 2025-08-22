@@ -1,44 +1,28 @@
-// Lightweight in-memory store (demo). Replace with a real DB for persistence.
-export type LngLat = [number, number];
+export type Coords = { lat: number; lng: number };
+export type Sample = { t: number; coords: Coords };
 
-type PersonTrack = {
-  name: string;
-  coords: LngLat[];     // [lng, lat]
-  lastAt: number;       // timestamp ms
-};
+const paths = new Map<string, Sample[]>();
 
-const tracks = new Map<string, PersonTrack>();
-
-export function upsertPoint(name: string, lng: number, lat: number, ts: number) {
+export function addPoint(name: string, sample: Sample) {
   const key = name.trim();
-  if (!key) return;
-  const ex = tracks.get(key);
-  if (ex) {
-    const last = ex.coords[ex.coords.length - 1];
-    if (!last || last[0] !== lng || last[1] !== lat) ex.coords.push([lng, lat]);
-    ex.lastAt = ts || Date.now();
-  } else {
-    tracks.set(key, { name: key, coords: [[lng, lat]], lastAt: ts || Date.now() });
-  }
+  const arr = paths.get(key) ?? [];
+  arr.push(sample);
+  paths.set(key, arr);
 }
 
-export function listPeople(): string[] {
-  return Array.from(tracks.keys()).sort();
+export function getPeople(): string[] {
+  return Array.from(paths.keys()).sort();
 }
 
-export function getPath(name: string): LngLat[] {
-  return tracks.get(name)?.coords || [];
+export function getPath(name: string): Sample[] {
+  return paths.get(name.trim()) ?? [];
 }
 
 export function getAllAsFeatureCollection() {
-  return {
-    type: "FeatureCollection",
-    features: Array.from(tracks.values())
-      .filter(t => t.coords.length > 0)
-      .map(t => ({
-        type: "Feature",
-        properties: { name: t.name, lastAt: t.lastAt },
-        geometry: { type: "LineString", coordinates: t.coords }
-      }))
-  };
+  const features = Array.from(paths.entries()).map(([name, samples]) => ({
+    type: 'Feature',
+    properties: { name },
+    geometry: { type: 'LineString', coordinates: samples.map(s => [s.coords.lng, s.coords.lat]) }
+  }));
+  return { type: 'FeatureCollection', features };
 }
