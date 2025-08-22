@@ -18,7 +18,7 @@ map.on('load', () => {
    AUDIO (iOS-safe) — core helpers
 =========================================================== */
 let audioCtx = null, masterGain = null;
-const playingSources = new Set(); // active loop handles
+const playingSources = new Set();
 const MAX_SIMULTANEOUS = 6;
 let interactionBound = false;
 
@@ -68,15 +68,11 @@ bindFirstInteractionUnlock();
 
 async function strongUnlock() {
   createContextIfNeeded();
-
-  // MediaElement trick + short osc ping to unlock on mobile Safari
   const el = document.createElement('audio');
   el.src = '/zone_sound1.mp3'; el.preload = 'auto'; el.crossOrigin = 'anonymous'; el.playsInline = true; el.volume = 0.05;
   document.body.appendChild(el);
   try { const node = audioCtx.createMediaElementSource(el); node.connect(masterGain); await el.play(); } catch(e){ console.warn('MediaElement unlock failed:', e); }
-
   try { const osc = audioCtx.createOscillator(); const g = audioCtx.createGain(); g.gain.value=0.08; osc.frequency.value=880; osc.connect(g).connect(masterGain); osc.start(); setTimeout(()=>{try{osc.stop()}catch{}},120); } catch(e){}
-
   const t0 = performance.now();
   const tick = async () => {
     if (!audioCtx) return;
@@ -118,7 +114,6 @@ function getLoopPoints(buf, thresh = 0.0008, padSamples = 64){
   const sr = buf.sampleRate;
   const N  = buf.length;
   let start = N, end = 0;
-
   for (let ch=0; ch<buf.numberOfChannels; ch++){
     const d = buf.getChannelData(ch);
     let i=0; while (i<N && Math.abs(d[i]) <= thresh) i++;
@@ -126,11 +121,9 @@ function getLoopPoints(buf, thresh = 0.0008, padSamples = 64){
     start = Math.min(start, i);
     end   = Math.max(end,   j+1);
   }
-
   if (start >= end) { start = 0; end = N; }
   start = Math.max(0, start - padSamples);
   end   = Math.min(N, end + padSamples);
-
   const pts = { startSec: start / sr, endSec: end / sr, durSec: N / sr };
   loopPointsCache.set(buf, pts);
   return pts;
@@ -260,7 +253,7 @@ function dnToSoundIndex(dn, dnMin = -11, dnMax = -1){
   return 1 + Math.round(t * (SOUND_FILE_COUNT - 1));
 }
 
-const soundCache = new Map(); // idx -> AudioBuffer|null
+const soundCache = new Map();
 async function getSoundBuffer(idx){
   if (soundCache.has(idx)) return soundCache.get(idx);
   const url = `/zone_sound${idx}.mp3`;
@@ -271,7 +264,6 @@ async function getSoundBuffer(idx){
 
 let loopHandles = [], loopMeta = [];
 
-/* Shared loop management (ref-counted) */
 function retainSharedLoop(idx, buf){
   let rec = activeLoopByIdx.get(idx);
   if (!rec){
@@ -296,7 +288,6 @@ async function startLoopsForIndex(i, dn){
   const idx = dnToSoundIndex(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
   const buf = await getSoundBuffer(idx);
   if (!buf) return;
-
   createContextIfNeeded();
   const h = retainSharedLoop(idx, buf);
   loopHandles[i] = h;
@@ -402,7 +393,7 @@ async function updateActiveZonesFromPoints(points){
 =========================================================== */
 let bedrockZones=[], zoneFlags=[], zoneBBoxes=[];
 let drawnCoords=[], isDrawing=false;
-let liveHeadCoords = []; // <— heads from live data
+let liveHeadCoords = []; // heads from live data
 
 map.on('load', async () => {
   ensureModeButton();
@@ -414,7 +405,6 @@ map.on('load', async () => {
 
   const dns = bedrockZones.map(f => f?.properties?.DN).filter(Number.isFinite);
   const [min,max] = dns.length ? [Math.min(...dns), Math.max(...dns)] : [-11,-1];
-
   map.__DN_MIN__ = min;
   map.__DN_MAX__ = max;
 
@@ -454,7 +444,7 @@ map.on('load', async () => {
   map.addSource('live-lines', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
   map.addLayer({ id:'live-lines', type:'line', source:'live-lines', paint:{ 'line-color':'#0e01f5', 'line-width':4 } });
 
-  /* --- pulsing head dot(s) at start of line(s) --- */
+  /* --- pulsing head dot(s) (END of lines) --- */
   map.addSource('live-head', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
   map.addLayer({
     id: 'live-head',
@@ -480,30 +470,31 @@ map.on('load', async () => {
     legend.style.background = `linear-gradient(to left, ${MAGMA.join(',')})`;
     legend.style.border = '1px solid rgba(255,255,255,0.35)';
   }
-  
-  
 
   updateLegendPosition();
 
   // --- Add GeoTIFF layer (starts hidden) ---
   await addGeoTiffLayer();
 
+  // --- Saved paths layer (persistent) ---
+  map.addSource('saved-path', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
+  map.addLayer({
+    id:'saved-path',
+    type:'line',
+    source:'saved-path',
+    paint:{ 'line-color':'#111', 'line-width':3, 'line-opacity':0.7 }
+  });
+
   // --- pulse animation loop for head dot(s) ---
   (function animateHead(){
     requestAnimationFrame(animateHead);
-
-    // prefer drawn head while drawing; otherwise use live heads
- const headsToShow = (drawnCoords.length ? [drawnCoords[drawnCoords.length - 1]] : liveHeadCoords);
-
-
+    const headsToShow = (drawnCoords.length ? [drawnCoords[drawnCoords.length - 1]] : liveHeadCoords);
     if (!headsToShow || !headsToShow.length) {
       map.getSource('live-head')?.setData({ type:'FeatureCollection', features:[] });
       return;
     }
-
-    const t = (performance.now() % 1000) / 1000;           // 0..1
-    const pulse = 0.5 * (1 - Math.cos(3 * Math.PI * t));   // smooth pulse
-
+    const t = (performance.now() % 1000) / 1000; // 0..1
+    const pulse = 0.5 * (1 - Math.cos(3 * Math.PI * t));
     map.getSource('live-head')?.setData({
       type:'FeatureCollection',
       features: headsToShow.map(coord => ({
@@ -513,6 +504,9 @@ map.on('load', async () => {
       }))
     });
   })();
+
+  // Populate saved people list (click to show path)
+  refreshPeople();
 });
 
 /* ===========================================================
@@ -540,26 +534,23 @@ async function updateMap() {
       data = { type:'FeatureCollection', features:[] };
     }
 
-    // set line(s)
+    // draw live lines
     map.getSource('live-lines')?.setData(data);
 
-    // compute head(s) from START of each live line
-// compute head(s) from END of each live line
-liveHeadCoords = [];
-for (const f of (data.features || [])) {
-  const g = f && f.geometry;
-  if (!g) continue;
+    // head(s) at END of each live line
+    liveHeadCoords = [];
+    for (const f of (data.features || [])) {
+      const g = f && f.geometry;
+      if (!g) continue;
+      if (g.type === 'LineString' && Array.isArray(g.coordinates) && g.coordinates.length) {
+        liveHeadCoords.push(g.coordinates[g.coordinates.length - 1]);
+      } else if (g.type === 'MultiLineString' && Array.isArray(g.coordinates) && g.coordinates.length) {
+        const lastPart = g.coordinates[g.coordinates.length - 1] || [];
+        if (lastPart.length) liveHeadCoords.push(lastPart[lastPart.length - 1]);
+      }
+    }
 
-  if (g.type === 'LineString' && Array.isArray(g.coordinates) && g.coordinates.length) {
-    liveHeadCoords.push(g.coordinates[g.coordinates.length - 1]); // end
-  } else if (g.type === 'MultiLineString' && Array.isArray(g.coordinates) && g.coordinates.length) {
-    const lastPart = g.coordinates[g.coordinates.length - 1] || [];
-    if (lastPart.length) liveHeadCoords.push(lastPart[lastPart.length - 1]); // end of last part
-  }
-}
-
-
-    // audio zone updates (use last points of lines)
+    // audio zones from last points
     const points = [];
     (data.features||[]).forEach(feature => {
       const coords = feature?.geometry?.coordinates;
@@ -583,6 +574,63 @@ for (const f of (data.features || [])) {
 }
 
 /* ===========================================================
+   SAVED PATHS (persisted on server)
+=========================================================== */
+async function showSavedPath(name) {
+  try{
+    const r = await fetch(`/api/path/${encodeURIComponent(name)}`, { cache: "no-store" });
+    if (!r.ok) { console.warn('GET /api/path failed'); return; }
+    const fc = await r.json();
+
+    if (map.getSource('saved-path')) {
+      map.getSource('saved-path').setData(fc);
+    }
+
+    // Fit bounds if path exists
+    const coords = fc.features?.[0]?.geometry?.coordinates || [];
+    if (coords.length) {
+      const bbox = coords.reduce(
+        (b,[x,y]) => [Math.min(b[0],x), Math.min(b[1],y), Math.max(b[2],x), Math.max(b[3],y)],
+        [ Infinity,  Infinity, -Infinity, -Infinity]
+      );
+      map.fitBounds(bbox, { padding: { top: 20, right: 20, bottom: 280, left: 20 } });
+    }
+  } catch(e){
+    console.error('showSavedPath error', e);
+  }
+}
+
+async function refreshPeople() {
+  try {
+    const r = await fetch('/api/people', { cache: 'no-store' });
+    if (!r.ok) return;
+    const { people } = await r.json();
+
+    const fillList = (ul) => {
+      if (!ul) return;
+      ul.innerHTML = '';
+      (people || []).forEach(p => {
+        const li = document.createElement('li');
+        li.textContent = p;
+        li.style.cursor = 'pointer';
+        li.onclick = () => showSavedPath(p);
+        ul.appendChild(li);
+      });
+    };
+    fillList(document.getElementById('peopleList'));     // desktop
+    fillList(document.getElementById('peopleList_m'));   // mobile
+  } catch(e){
+    console.warn('refreshPeople failed', e);
+  }
+}
+
+/* Optional manual loader (if you have inputs/buttons) */
+document.getElementById('loadSavedBtn')?.addEventListener('click', () => {
+  const name = document.getElementById('historyName')?.value?.trim();
+  if (name) showSavedPath(name);
+});
+
+/* ===========================================================
    DRAW TOOL
 =========================================================== */
 map.on('click', (e) => {
@@ -590,35 +638,32 @@ map.on('click', (e) => {
 
   drawnCoords.push([e.lngLat.lng, e.lngLat.lat]);
 
-  // update line
   const line = {
     type:'FeatureCollection',
     features:[{ type:'Feature', geometry:{ type:'LineString', coordinates: drawnCoords } }]
   };
   map.getSource('live-lines')?.setData(line);
 
-  // update head point at START of line
-// update head point at END of line
-const tail = drawnCoords[drawnCoords.length - 1];
-map.getSource('live-head')?.setData({
-  type:'FeatureCollection',
-  features:[{
-    type:'Feature',
-    properties:{ pulse: 1 },
-    geometry:{ type:'Point', coordinates: tail }
-  }]
+  // head point at END of drawn line (the “moving dot”)
+  const tail = drawnCoords[drawnCoords.length - 1];
+  map.getSource('live-head')?.setData({
+    type:'FeatureCollection',
+    features:[{
+      type:'Feature',
+      properties:{ pulse: 1 },
+      geometry:{ type:'Point', coordinates: tail }
+    }]
+  });
 });
 
-});
-
-document.getElementById('drawBtn').onclick  = () => { isDrawing=true; drawnCoords=[]; };
-document.getElementById('clearBtn').onclick = () => {
+document.getElementById('drawBtn')?.addEventListener('click', () => { isDrawing=true; drawnCoords=[]; });
+document.getElementById('clearBtn')?.addEventListener('click', () => {
   isDrawing=false; drawnCoords=[];
   map.getSource('live-lines')?.setData({ type:'FeatureCollection', features:[] });
   map.getSource('live-head') ?.setData({ type:'FeatureCollection', features:[] });
   liveHeadCoords = [];
   stopAllModes();
-};
+});
 
 async function updateSimulation(){
   if (!drawnCoords.length) return;
@@ -676,8 +721,6 @@ function toggleLayer(id, btnId, label) {
   const btn = document.getElementById(btnId);
   if (btn) btn.textContent = `${label}: ${newVis === 'visible' ? 'ENCENDIDA' : 'APAGADA'}`;
 }
-
-/* Acequia toggle */
 document.getElementById('bedrockToggle')?.addEventListener('click', () =>
   toggleLayer('bedrock','bedrockToggle','Acequia')
 );
@@ -732,10 +775,10 @@ function stopSharing(nameInput, shareBtn, stopBtn){
   if (watchId!==null){ navigator.geolocation.clearWatch(watchId); watchId=null; }
   shareBtn.style.display='inline-block'; stopBtn.style.display='none'; nameInput.disabled=false;
 }
-elShare?.addEventListener('click', ()=>startSharing(elName, elShare, elStopSh));
-elStopSh?.addEventListener('click', ()=>stopSharing(elName, elShare, elStopSh));
+elShare ?.addEventListener('click', ()=>startSharing(elName,  elShare,  elStopSh));
+elStopSh?.addEventListener('click', ()=>stopSharing(elName,   elShare,  elStopSh));
 elShareM?.addEventListener('click', ()=>startSharing(elNameM, elShareM, elStopSM));
-elStopSM?.addEventListener('click', ()=>stopSharing(elNameM, elShareM, elStopSM));
+elStopSM?.addEventListener('click', ()=>stopSharing(elNameM,  elShareM, elStopSM));
 
 window.addEventListener('pagehide', ()=>{
   try{ navigator.sendBeacon?.('/api/geo', JSON.stringify({ name:(elName?.value||elNameM?.value||'').trim(), stop:true, timestamp:Date.now() })); }catch{}
@@ -774,7 +817,7 @@ function updateLegendPosition() {
 const sheet  = document.getElementById('sheet');
 const handle = document.getElementById('sheetHandle');
 
-const SHEET_PEEK = 52; // visible height when closed
+const SHEET_PEEK = 52;
 let maxY = 0;
 let sheetOpen = true;
 let dragging = false;
@@ -782,17 +825,12 @@ let startPointerY = 0;
 let startSheetY = 0;
 let currentY = 0;
 
-function recalcMaxY(){
-  maxY = Math.max(0, window.innerHeight - SHEET_PEEK);
-}
-
+function recalcMaxY(){ maxY = Math.max(0, window.innerHeight - SHEET_PEEK); }
 function getSheetY(){
   const t = getComputedStyle(sheet).transform;
   if (!t || t === 'none') return 0;
-  const m = new DOMMatrix(t);
-  return m.m42 || 0;
+  const m = new DOMMatrix(t); return m.m42 || 0;
 }
-
 function setSheetY(y, withTransition){
   sheet.style.willChange = 'transform';
   sheet.style.transition = withTransition ? 'transform 220ms cubic-bezier(.2,.8,.2,1)' : 'none';
@@ -800,17 +838,11 @@ function setSheetY(y, withTransition){
   currentY = y;
   updateLegendPosition();
 }
-
-function setSheet(open){
-  sheetOpen = open;
-  setSheetY(open ? 0 : maxY, true);
-}
-
+function setSheet(open){ sheetOpen = open; setSheetY(open ? 0 : maxY, true); }
 function snapToNearest(){
-  const threshold = maxY * 0.6; // >60% => closed
+  const threshold = maxY * 0.6;
   setSheet(currentY > threshold ? false : true);
 }
-
 function onPointerDown(e){
   dragging = true;
   startPointerY = e.clientY ?? (e.touches && e.touches[0].clientY) ?? 0;
@@ -819,7 +851,6 @@ function onPointerDown(e){
   handle.setPointerCapture?.(e.pointerId);
   e.preventDefault();
 }
-
 function onPointerMove(e){
   if (!dragging) return;
   const y = e.clientY ?? (e.touches && e.touches[0].clientY) ?? 0;
@@ -828,7 +859,6 @@ function onPointerMove(e){
   setSheetY(target, false);
   e.preventDefault();
 }
-
 function onPointerUp(e){
   if (!dragging) return;
   dragging = false;
@@ -837,19 +867,16 @@ function onPointerUp(e){
   e.preventDefault();
 }
 
-// Init
+// Init mobile sheet
 recalcMaxY();
 setSheet(true);
 updateLegendPosition();
-
 sheet.style.touchAction  = 'none';
 handle.style.touchAction = 'none';
-
 handle.addEventListener('pointerdown', onPointerDown, { passive:false });
 window.addEventListener('pointermove', onPointerMove, { passive:false });
 window.addEventListener('pointerup',   onPointerUp,   { passive:false });
 window.addEventListener('pointercancel', onPointerUp, { passive:false });
-
 function onResize(){
   const wasOpen = sheetOpen;
   recalcMaxY();
