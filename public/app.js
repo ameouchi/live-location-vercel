@@ -64,6 +64,7 @@ function bindFirstInteractionUnlock() {
   document.addEventListener('pointerdown', onceUnlock, { once: true });
   document.addEventListener('touchend',  onceUnlock, { once: true });
 }
+
 bindFirstInteractionUnlock();
 
 async function strongUnlock() {
@@ -109,6 +110,39 @@ async function processDecodeQueue() {
 }
 async function loadSound(url){ createContextIfNeeded(); return loadSoundQueued(url); }
 
+/* ===========================================================
+   GAPLESS LOOP HELPERS (fixes iOS MP3 padding)
+=========================================================== */
+const loopPointsCache = new WeakMap();
+function getLoopPoints(buf, thresh = 0.0008, padSamples = 64){
+  if (loopPointsCache.has(buf)) return loopPointsCache.get(buf);
+  const sr = buf.sampleRate;
+  const N  = buf.length;
+  let start = N, end = 0;
+
+  for (let ch=0; ch<buf.numberOfChannels; ch++){
+    const d = buf.getChannelData(ch);
+    let i=0; while (i<N && Math.abs(d[i]) <= thresh) i++;
+    let j=N-1; while (j>0 && Math.abs(d[j]) <= thresh) j--;
+    start = Math.min(start, i);
+    end   = Math.max(end,   j+1);
+  }
+
+  // safety: if file is mostly silent, fall back to whole buffer
+  if (start >= end) { start = 0; end = N; }
+
+  start = Math.max(0, start - padSamples);
+  end   = Math.min(N, end + padSamples);
+
+  const pts = { startSec: start / sr, endSec: end / sr, durSec: N / sr };
+  loopPointsCache.set(buf, pts);
+  return pts;
+}
+
+/* One source per unique loop (prevents phasing/beating) */
+const activeLoopByIdx = new Map(); // idx -> { handle, count }
+
+/* Start one buffer source with gapless loop points */
 function startZoneSound(buffer) {
   if (!buffer) return null;
   if (playingSources.size >= MAX_SIMULTANEOUS) {
@@ -117,15 +151,29 @@ function startZoneSound(buffer) {
   }
   const src = audioCtx.createBufferSource();
   const g = audioCtx.createGain();
+
+  // 🔽 gapless loop window
+  const { startSec, endSec, durSec } = getLoopPoints(buffer);
+  src.buffer = buffer;
+  src.loop = true;
+
+  // Avoid degenerate values on some browsers
+  const minSpan = 0.01;
+  const L = Math.max(startSec, 0);
+  const R = Math.max(L + minSpan, Math.min(endSec, durSec));
+  src.loopStart = L;
+  src.loopEnd   = R;
+
   g.gain.setValueAtTime(0, audioCtx.currentTime);
   g.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.15);
-  src.buffer = buffer; src.loop = true;
   src.connect(g).connect(masterGain || audioCtx.destination);
   src.start(0);
+
   const handle = { src, gain: g };
   playingSources.add(handle);
   return handle;
 }
+
 function stopHandle(handle){
   if (!handle) return;
   try{
@@ -231,27 +279,53 @@ async function getSoundBuffer(idx){
 
 let loopHandles = [], loopMeta = [];
 
-async function startLoopsForIndex(i, dn){
-  const idx = dnToSoundIndex(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
-  const url = `/zone_sound${idx}.mp3`;
-  const buf = await getSoundBuffer(idx);
-  if (buf) {
+/* Shared loop management (ref-counted) */
+function retainSharedLoop(idx, buf){
+  let rec = activeLoopByIdx.get(idx);
+  if (!rec){
     const h = startZoneSound(buf);
-    loopHandles[i] = h;
-    loopMeta[i] = { idx, url, dn };
-    console.info(`[AUDIO] Zone ${i} (DN ${dn}) → ${url}`);
+    rec = { handle: h, count: 0 };
+    activeLoopByIdx.set(idx, rec);
+  }
+  rec.count++;
+  return rec.handle;
+}
+function releaseSharedLoop(idx){
+  const rec = activeLoopByIdx.get(idx);
+  if (!rec) return;
+  rec.count--;
+  if (rec.count <= 0){
+    stopHandle(rec.handle);
+    activeLoopByIdx.delete(idx);
   }
 }
+
+async function startLoopsForIndex(i, dn){
+  const idx = dnToSoundIndex(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
+  const buf = await getSoundBuffer(idx);
+  if (!buf) return;
+
+  createContextIfNeeded();
+  const h = retainSharedLoop(idx, buf);
+  loopHandles[i] = h;
+  loopMeta[i] = { idx, dn };
+  console.info(`[AUDIO] Zone ${i} (DN ${dn}) → zone_sound${idx}.mp3 (gapless)`);
+}
+
 function stopLoopsForIndex(i){
-  const h = loopHandles[i];
-  if (h){ try{ stopHandle(h); }catch{} }
-  loopHandles[i]=null;
-  loopMeta[i]=null;
+  const meta = loopMeta[i];
+  if (!meta) { loopHandles[i]=null; return; }
+  releaseSharedLoop(meta.idx);
+  loopHandles[i]=null; loopMeta[i]=null;
 }
 
 function stopAllModes(){
   stopAllCellClicks();
-  for (let i=0;i<loopHandles.length;i++) stopLoopsForIndex(i);
+  // stop shared loops
+  for (const [idx, rec] of activeLoopByIdx.entries()){ try{ stopHandle(rec.handle); }catch{} }
+  activeLoopByIdx.clear();
+  // local bookkeeping
+  for (let i=0;i<loopHandles.length;i++){ loopHandles[i]=null; loopMeta[i]=null; }
   stopAllSounds();
 }
 
@@ -627,6 +701,7 @@ function updateLegendPosition() {
     legend.style.bottom = `${MIN_PX}px`;
   }
 }
+
 /* ===========================================================
    MOBILE SHEET — smooth drag & snap
 =========================================================== */
@@ -648,7 +723,6 @@ function recalcMaxY(){
 function getSheetY(){
   const t = getComputedStyle(sheet).transform;
   if (!t || t === 'none') return 0;
-  // DOMMatrix gives us the translateY at m42
   const m = new DOMMatrix(t);
   return m.m42 || 0;
 }
@@ -684,10 +758,8 @@ function onPointerMove(e){
   if (!dragging) return;
   const y = e.clientY ?? (e.touches && e.touches[0].clientY) ?? 0;
   const dy = y - startPointerY;
-  // clamp between 0 (open) and maxY (closed)
   const target = Math.min(maxY, Math.max(0, startSheetY + dy));
   setSheetY(target, false);
-  // prevent page scroll on mobile while dragging
   e.preventDefault();
 }
 
@@ -718,7 +790,7 @@ window.addEventListener('pointercancel', onPointerUp, { passive:false });
 function onResize(){
   const wasOpen = sheetOpen;
   recalcMaxY();
-  setSheet(wasOpen); // reapply position with new maxY
+  setSheet(wasOpen);
 }
 window.addEventListener('resize', onResize);
 window.addEventListener('orientationchange', onResize);
