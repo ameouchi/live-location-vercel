@@ -402,6 +402,7 @@ async function updateActiveZonesFromPoints(points){
 =========================================================== */
 let bedrockZones=[], zoneFlags=[], zoneBBoxes=[];
 let drawnCoords=[], isDrawing=false;
+let liveHeadCoords = []; // <— heads from live data
 
 map.on('load', async () => {
   ensureModeButton();
@@ -453,7 +454,7 @@ map.on('load', async () => {
   map.addSource('live-lines', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
   map.addLayer({ id:'live-lines', type:'line', source:'live-lines', paint:{ 'line-color':'#FF0000', 'line-width':4 } });
 
-  /* --- pulsing head dot at start of line --- */
+  /* --- pulsing head dot(s) at start of line(s) --- */
   map.addSource('live-head', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
   map.addLayer({
     id: 'live-head',
@@ -485,20 +486,28 @@ map.on('load', async () => {
   // --- Add GeoTIFF layer (starts hidden) ---
   await addGeoTiffLayer();
 
-  // --- pulse animation loop for head dot ---
+  // --- pulse animation loop for head dot(s) ---
   (function animateHead(){
     requestAnimationFrame(animateHead);
-    if (!drawnCoords.length) return; // no line → nothing to show
-    const head = drawnCoords[0];
+
+    // prefer drawn head while drawing; otherwise use live heads
+    const headsToShow = (drawnCoords.length ? [drawnCoords[0]] : liveHeadCoords);
+
+    if (!headsToShow || !headsToShow.length) {
+      map.getSource('live-head')?.setData({ type:'FeatureCollection', features:[] });
+      return;
+    }
+
     const t = (performance.now() % 1000) / 1000;           // 0..1
     const pulse = 0.5 * (1 - Math.cos(2 * Math.PI * t));   // smooth pulse
+
     map.getSource('live-head')?.setData({
       type:'FeatureCollection',
-      features:[{
+      features: headsToShow.map(coord => ({
         type:'Feature',
         properties:{ pulse },
-        geometry:{ type:'Point', coordinates: head }
-      }]
+        geometry:{ type:'Point', coordinates: coord }
+      }))
     });
   })();
 });
@@ -514,6 +523,8 @@ async function updateMap() {
       console.warn('GET /api/geo failed:', res.status, res.statusText);
       const src = map.getSource('live-lines');
       if (src) src.setData({ type:'FeatureCollection', features:[] });
+      map.getSource('live-head')?.setData({ type:'FeatureCollection', features:[] });
+      liveHeadCoords = [];
       return;
     }
 
@@ -526,30 +537,41 @@ async function updateMap() {
       data = { type:'FeatureCollection', features:[] };
     }
 
-    const src = map.getSource('live-lines');
-    if (src) src.setData(data);
+    // set line(s)
+    map.getSource('live-lines')?.setData(data);
 
-    const names = new Set((data.features||[]).map(f => f.properties?.name).filter(Boolean));
-    const renderList = (ul) => {
-      if (!ul) return; ul.innerHTML='';
-      [...names].sort().forEach(n => { const li=document.createElement('li'); li.textContent=n; ul.appendChild(li); });
-    };
-    renderList(document.getElementById('peopleList'));
-    renderList(document.getElementById('peopleList_m'));
+    // compute head(s) from START of each live line
+    liveHeadCoords = [];
+    for (const f of (data.features || [])) {
+      const g = f && f.geometry;
+      if (!g) continue;
+      if (g.type === 'LineString' && g.coordinates?.length) {
+        liveHeadCoords.push(g.coordinates[0]);
+      } else if (g.type === 'MultiLineString' && g.coordinates?.length && g.coordinates[0]?.length) {
+        liveHeadCoords.push(g.coordinates[0][0]);
+      }
+    }
 
+    // audio zone updates (use last points of lines)
     const points = [];
     (data.features||[]).forEach(feature => {
       const coords = feature?.geometry?.coordinates;
       if (coords && coords.length) {
-        points.push(turf.point(coords[coords.length - 1]));
+        if (feature.geometry.type === 'LineString') {
+          points.push(turf.point(coords[coords.length - 1]));
+        } else if (feature.geometry.type === 'MultiLineString') {
+          const lastPart = coords[coords.length-1] || [];
+          if (lastPart.length) points.push(turf.point(lastPart[lastPart.length-1]));
+        }
       }
     });
     await updateActiveZonesFromPoints(points);
 
   } catch (err) {
     console.error('Error updating live data', err);
-    const src = map.getSource('live-lines');
-    if (src) src.setData({ type:'FeatureCollection', features:[] });
+    map.getSource('live-lines')?.setData({ type:'FeatureCollection', features:[] });
+    map.getSource('live-head') ?.setData({ type:'FeatureCollection', features:[] });
+    liveHeadCoords = [];
   }
 }
 
@@ -574,7 +596,7 @@ map.on('click', (e) => {
     type:'FeatureCollection',
     features:[{
       type:'Feature',
-      properties:{ pulse: 1 }, // initial full
+      properties:{ pulse: 1 },
       geometry:{ type:'Point', coordinates: head }
     }]
   });
@@ -585,6 +607,7 @@ document.getElementById('clearBtn').onclick = () => {
   isDrawing=false; drawnCoords=[];
   map.getSource('live-lines')?.setData({ type:'FeatureCollection', features:[] });
   map.getSource('live-head') ?.setData({ type:'FeatureCollection', features:[] });
+  liveHeadCoords = [];
   stopAllModes();
 };
 
