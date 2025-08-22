@@ -143,7 +143,7 @@ let drawnCoords=[], isDrawing=false;
 map.on('load', async () => {
   const loadGeo = async (file) => (await fetch(file)).json();
 
-  const bedrock = await loadGeo('acequia.geojson');
+  const bedrock = await loadGeo('cambridge.geojson');
   bedrockZones = bedrock.features || [];
   zoneBBoxes = bedrockZones.map(f => turf.bbox(f));
 
