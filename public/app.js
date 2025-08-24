@@ -507,6 +507,10 @@ map.on('load', async () => {
 
   // Populate saved people list (click to show path)
   refreshPeople();
+
+  startMain();
+});
+
 });
 
 /* ===========================================================
