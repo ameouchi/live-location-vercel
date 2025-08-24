@@ -1,5 +1,8 @@
 {
   "name": "live-location-vercel",
   "version": "1.0.0",
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@vercel/kv": "^3.0.0"
+  }
 }

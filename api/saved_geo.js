@@ -1,11 +1,9 @@
 // api/saved_geo.js
-// In-memory store of all paths by person: { [name]: Array<{lng,lat,timestamp}> }
-let userPaths = {};
+// Persistent paths using Vercel KV (Redis). Data survives restarts and redeploys.
 
-// Optional: ensure Next/Vercel parses JSON body
-export const config = {
-  api: { bodyParser: true },
-};
+import { kv } from '@vercel/kv';
+
+export const config = { api: { bodyParser: true } };
 
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -13,80 +11,92 @@ function cors(res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
-function buildFeatureCollection() {
-  const features = Object.entries(userPaths).map(([name, path]) => {
-    const coords = path.map(p => [p.lng, p.lat]);
-    const first = path[0]?.timestamp ?? null;
-    const last  = path[path.length - 1]?.timestamp ?? null;
-    return {
-      type: "Feature",
-      properties: {
-        name,
-        count: path.length,
-        startTs: first,
-        endTs: last
-      },
-      geometry: {
-        type: "LineString",
-        coordinates: coords
-      }
-    };
-  });
+function isFiniteNum(n){ return typeof n === 'number' && Number.isFinite(n); }
 
-  return { type: "FeatureCollection", features };
+async function addPoint(name, coords, timestamp) {
+  const key = `path:${name}`;
+  const point = { lat: coords.lat, lng: coords.lng, timestamp };
+  // Keep an index of all people in a Set
+  await kv.sadd('people', name);
+  // Append to that person's list (right side = chronological)
+  await kv.rpush(key, point);
+
+  // Optional cap to prevent unbounded growth per person
+  const MAX_POINTS = 5000;
+  const len = await kv.llen(key);
+  if (len > MAX_POINTS) {
+    // Trim to last MAX_POINTS items (Redis LTRIM is inclusive)
+    await kv.ltrim(key, len - MAX_POINTS, -1);
+  }
+}
+
+async function buildFeatureCollection() {
+  const people = await kv.smembers('people'); // ['Ana', 'Ben', ...]
+  const features = [];
+
+  for (const name of people) {
+    const arr = await kv.lrange(`path:${name}`, 0, -1); // returns array of points
+    // Some KV clients return raw; ensure objects:
+    const pts = (arr || []).map(v => (typeof v === 'string' ? JSON.parse(v) : v));
+
+    if (!pts.length) continue;
+    const coords = pts.map(p => [p.lng, p.lat]);
+    const first = pts[0]?.timestamp ?? null;
+    const last  = pts[pts.length - 1]?.timestamp ?? null;
+
+    features.push({
+      type: 'Feature',
+      properties: { name, count: pts.length, startTs: first, endTs: last },
+      geometry: { type: 'LineString', coordinates: coords }
+    });
+  }
+
+  return { type: 'FeatureCollection', features };
 }
 
 export default async function handler(req, res) {
   cors(res);
-
-  // CORS preflight
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
     if (req.method === 'POST') {
-      // Accept single point {name, coords:{lat,lng}, timestamp}
-      // or batch {updates:[{name, coords, timestamp}, ...]}
       const body = req.body || {};
       const updates = Array.isArray(body.updates) ? body.updates : [body];
 
       for (const u of updates) {
-        if (!u || !u.name || !u.coords || !Number.isFinite(u.coords.lat) || !Number.isFinite(u.coords.lng)) {
-          continue;
-        }
-        const ts = Number.isFinite(u.timestamp) ? u.timestamp : Date.now();
-        if (!userPaths[u.name]) userPaths[u.name] = [];
-        userPaths[u.name].push({ lat: u.coords.lat, lng: u.coords.lng, timestamp: ts });
-
-        // (Optional) cap per-person history to avoid unbounded growth
-        const MAX_POINTS = 5000;
-        if (userPaths[u.name].length > MAX_POINTS) {
-          userPaths[u.name] = userPaths[u.name].slice(-MAX_POINTS);
-        }
+        if (!u || !u.name || !u.coords) continue;
+        const { lat, lng } = u.coords || {};
+        if (!isFiniteNum(lat) || !isFiniteNum(lng)) continue;
+        const ts = isFiniteNum(u.timestamp) ? u.timestamp : Date.now();
+        await addPoint(u.name, { lat, lng }, ts);
       }
 
-      return res.status(200).json({ ok: true, people: Object.keys(userPaths) });
+      const people = await kv.smembers('people');
+      return res.status(200).json({ ok: true, people });
     }
 
     if (req.method === 'GET') {
-      // Return a single FeatureCollection for everyone
-      const fc = buildFeatureCollection();
+      const fc = await buildFeatureCollection();
       res.setHeader('Content-Type', 'application/json');
       return res.status(200).json(fc);
     }
 
     if (req.method === 'DELETE') {
-      // Optional cleanup:
+      // Optional cleanup endpoints:
       //   DELETE /api/saved_geo           -> clear all
       //   DELETE /api/saved_geo?name=Ana  -> clear one person
       const name = (req.query?.name || '').toString().trim();
       if (name) {
-        delete userPaths[name];
+        await kv.del(`path:${name}`);
+        await kv.srem('people', name);
       } else {
-        userPaths = {};
+        const people = await kv.smembers('people');
+        const keys = people.map(n => `path:${n}`);
+        if (keys.length) await kv.del(...keys);
+        await kv.del('people');
       }
-      return res.status(200).json({ ok: true, people: Object.keys(userPaths) });
+      const remaining = await kv.smembers('people');
+      return res.status(200).json({ ok: true, people: remaining });
     }
 
     return res.status(405).json({ error: 'Method Not Allowed' });
