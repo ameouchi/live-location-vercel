@@ -761,6 +761,10 @@ function startMain() {
   });
 }
 
+function stopMain(){
+  stopAllModes();
+  if (mainTimer){ clearInterval(mainTimer); mainTimer=null; }
+}
 
 function enableAudio(){ strongUnlock().then(()=>alert('Sound enabled. If still silent on iPhone, set Ring switch to RING and raise volume.')); }
 async function testMp3(){
