@@ -458,6 +458,28 @@ map.on('load', async () => {
       'circle-opacity': ['interpolate', ['linear'], ['get','pulse'], 0, 0.25, 1, 1]
     }
   });
+  // --- (Nice to have) Everyone's saved history (light trails) ---
+map.addSource('saved-all', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
+map.addLayer({
+  id:'saved-all',
+  type:'line',
+  source:'saved-all',
+  paint:{ 'line-color':'#444', 'line-width':2, 'line-opacity':0.6 }
+});
+
+// --- Latest position dot for each person (computed from saved history) ---
+map.addSource('saved-heads', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
+map.addLayer({
+  id:'saved-heads',
+  type:'circle',
+  source:'saved-heads',
+  paint:{
+    'circle-radius': 6,
+    'circle-color': '#111',
+    'circle-stroke-color': '#ffffff',
+    'circle-stroke-width': 2
+  }
+});
 
   if (bedrock.features?.length) {
     map.fitBounds(turf.bbox(bedrock), {
@@ -761,17 +783,35 @@ async function startSharing(nameInput, shareBtn, stopBtn){
     const same = lastCoords && Math.abs(coords.lat-lastCoords.lat)<1e-7 && Math.abs(coords.lng-lastCoords.lng)<1e-7;
     if (now-lastSentAt<MIN_INTERVAL_MS && same) return;
     lastCoords=coords; lastSentAt=now;
-    try{
-      const res=await fetch('/api/geo',{ method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({name, coords, timestamp:now}), keepalive:true });
-      if(!res.ok) console.warn('POST /api/geo failed:', res.status, res.statusText);
-    }catch(err){ console.warn('Sending location failed:', err); }
+
+    try {
+      // 1) existing live endpoint
+      const res = await fetch('/api/geo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, coords, timestamp: now }),
+        keepalive: true
+      });
+      if (!res.ok) console.warn('POST /api/geo failed:', res.status, res.statusText);
+
+      // 2) NEW: also persist every point to saved history
+      const res2 = await fetch('/api/saved_geo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, coords, timestamp: now }),
+        keepalive: true
+      });
+      if (!res2.ok) console.warn('POST /api/saved_geo failed:', res2.status, res2.statusText);
+    } catch (err) {
+      console.warn('Sending location failed:', err);
+    }
   }, (err)=>{
     console.error('watchPosition error:', err);
     alert('Location error: ' + (err.message||err));
     stopSharing(nameInput, shareBtn, stopBtn);
   }, { enableHighAccuracy:true, maximumAge:0, timeout:10000 });
 }
+
 function stopSharing(nameInput, shareBtn, stopBtn){
   if (watchId!==null){ navigator.geolocation.clearWatch(watchId); watchId=null; }
   shareBtn.style.display='inline-block'; stopBtn.style.display='none'; nameInput.disabled=false;
