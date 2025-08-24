@@ -595,6 +595,40 @@ async function updateMap() {
     liveHeadCoords = [];
   }
 }
+// -----------------------------------------------------------
+// Poll everyone's saved paths and update map layers
+// -----------------------------------------------------------
+async function updateSavedGeo() {
+  try {
+    const r = await fetch('/api/saved_geo', { cache: 'no-store' });
+    if (!r.ok) return;
+
+    const fc = await r.json();
+    // Update light trails for everyone
+    map.getSource('saved-all')?.setData(fc);
+
+    // Create "head" dots for the last point of each path
+    const heads = [];
+    (fc.features || []).forEach(f => {
+      const coords = f.geometry?.coordinates;
+      if (Array.isArray(coords) && coords.length) {
+        const last = coords[coords.length - 1];
+        heads.push({
+          type: 'Feature',
+          properties: { name: f.properties?.name || '' },
+          geometry: { type: 'Point', coordinates: last }
+        });
+      }
+    });
+
+    map.getSource('saved-heads')?.setData({
+      type: 'FeatureCollection',
+      features: heads
+    });
+  } catch (e) {
+    console.warn('updateSavedGeo failed', e);
+  }
+}
 
 /* ===========================================================
    SAVED PATHS (persisted on server)
@@ -697,25 +731,36 @@ async function updateSimulation(){
 /* ===========================================================
    CONTROLS
 =========================================================== */
-let mainTimer=null;
-function startMain(){
-  strongUnlock().then(()=>{
-    for (let i=1;i<=SOUND_FILE_COUNT;i++) getSoundBuffer(i);
+let mainTimer = null;
+function startMain() {
+  strongUnlock().then(() => {
+    for (let i = 1; i <= SOUND_FILE_COUNT; i++) getSoundBuffer(i);
     if (mainTimer) return;
-    let lastResume=0;
-    mainTimer=setInterval(async ()=>{
-      if (audioCtx && audioCtx.state!=='running'){
-        const now=performance.now();
-        if (now-lastResume>1000){ try{await audioCtx.resume();}catch{} lastResume=now; updateCtxBadge(); }
+    let lastResume = 0;
+    let tick = 0;
+    mainTimer = setInterval(async () => {
+      // Resume audio if suspended
+      if (audioCtx && audioCtx.state !== 'running') {
+        const now = performance.now();
+        if (now - lastResume > 1000) {
+          try { await audioCtx.resume(); } catch {}
+          lastResume = now;
+          updateCtxBadge();
+        }
       }
-      updateSimulation(); updateMap();
+
+      // Regular updates
+      updateSimulation();
+      updateMap();
+
+      // Every ~5 ticks (~6 seconds), also update saved paths
+      if (++tick % 5 === 0) {
+        updateSavedGeo();
+      }
     }, 1200);
   });
 }
-function stopMain(){
-  stopAllModes();
-  if (mainTimer){ clearInterval(mainTimer); mainTimer=null; }
-}
+
 
 function enableAudio(){ strongUnlock().then(()=>alert('Sound enabled. If still silent on iPhone, set Ring switch to RING and raise volume.')); }
 async function testMp3(){
