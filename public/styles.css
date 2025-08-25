@@ -127,6 +127,17 @@ button:active{ transform: translateY(15px); }
 }
 #sheetBody{ overflow:auto; display:flex; flex-direction:column; gap:12px; }
 
+/* Dragging needs to cancel native scrolling/gestures */
+#sheet,
+#sheetHeader,
+#sheetHandle,
+.drag {
+  touch-action: none;       /* critical on mobile */
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: grab;
+}
+
 .controlRow{
   display:grid; grid-template-columns: 1fr 1fr; gap:0px;
 }
