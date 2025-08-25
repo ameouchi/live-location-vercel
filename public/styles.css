@@ -127,16 +127,29 @@ button:active{ transform: translateY(15px); }
 }
 #sheetBody{ overflow:auto; display:flex; flex-direction:column; gap:12px; }
 
-/* Dragging needs to cancel native scrolling/gestures */
+/* --- Sheet drag: make sure we own the gesture and sit on top --- */
 #sheet,
 #sheetHeader,
 #sheetHandle,
 .drag {
-  touch-action: none;       /* critical on mobile */
-  -webkit-user-select: none;
+  touch-action: none;             /* prevent browser scroll */
   user-select: none;
+  -webkit-user-select: none;
   cursor: grab;
 }
+
+#sheetHeader { position: sticky; top: 0; z-index: 1002; }
+
+/* Transparent blocker shown only while dragging to stop the map catching moves */
+#sheetDragOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1001;                  /* just under the header so handle still works */
+  background: transparent;
+  display: none;                  /* toggled by JS */
+  pointer-events: auto;           /* eats pointer events while visible */
+}
+
 
 .controlRow{
   display:grid; grid-template-columns: 1fr 1fr; gap:0px;

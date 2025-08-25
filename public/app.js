@@ -901,101 +901,118 @@ function updateLegendPosition() {
   }
 }
 /* ===========================================================
-   MOBILE SHEET — smooth drag & snap (robust)
+   MOBILE SHEET — robust drag with overlay + snap
 =========================================================== */
 (function initMobileSheet() {
   const sheet  = document.getElementById('sheet');
-  const handle = document.getElementById('sheetHandle') || document.getElementById('sheetHandle') || document.querySelector('.drag');
-  if (!sheet || !handle) return;
+  const handle = document.getElementById('sheetHandle') || document.querySelector('.drag');
+  const overlay = document.getElementById('sheetDragOverlay');
 
-  const SHEET_PEEK = 52;     // how many px remain visible when closed
-  let maxY = 0;              // computed from viewport height
-  let sheetOpen = true;      // starts open (matches your CSS default)
-  let dragging = false;
-  let startPointerY = 0;
-  let startSheetY   = 0;
-  let currentY      = 0;
-
-  function recalcMaxY() {
-    // how far we can slide it down until only the "peek" remains
-    maxY = Math.max(0, window.innerHeight - SHEET_PEEK);
+  if (!sheet || !handle) {
+    console.warn('[sheet] Missing #sheet or #sheetHandle');
+    return;
+  }
+  if (!overlay) {
+    console.warn('[sheet] Missing #sheetDragOverlay; create one to prevent map steals');
   }
 
-  function getSheetY() {
+  const SHEET_PEEK = 52; // px of sheet left visible when "closed"
+  let maxY = 0;          // computed from viewport
+  let open = true;       // start open, matches your current UI
+  let dragging = false;
+  let startPointerY = 0;
+  let startY = 0;        // starting translateY
+  let currentY = 0;
+
+  function recalcMaxY() {
+    maxY = Math.max(0, window.innerHeight - SHEET_PEEK);
+  }
+  function getY() {
     const t = getComputedStyle(sheet).transform;
     if (!t || t === 'none') return 0;
     const m = new DOMMatrix(t);
-    // m41/m42 are translateX/translateY; we only care about Y
     return m.m42 || 0;
   }
-
-  function setSheetY(y, withTransition) {
+  function setY(y, animate) {
     sheet.style.willChange = 'transform';
-    sheet.style.transition = withTransition ? 'transform 220ms cubic-bezier(.2,.8,.2,1)' : 'none';
-    sheet.style.transform  = `translateY(${y}px)`;
+    sheet.style.transition = animate ? 'transform 220ms cubic-bezier(.2,.8,.2,1)' : 'none';
+    sheet.style.transform = `translateY(${y}px)`;
     currentY = y;
-    // you were adjusting legend via JS elsewhere; call it if present
     try { updateLegendPosition?.(); } catch {}
   }
-
-  function setSheet(open) {
-    sheetOpen = !!open;
-    setSheetY(sheetOpen ? 0 : maxY, true);
+  function setOpen(nextOpen, animate = true) {
+    open = !!nextOpen;
+    setY(open ? 0 : maxY, animate);
+  }
+  function showOverlay(show) {
+    if (!overlay) return;
+    overlay.style.display = show ? 'block' : 'none';
+  }
+  function snap() {
+    const threshold = maxY * 0.6;          // >60% down = close
+    setOpen(currentY <= threshold, true);
+    showOverlay(false);
   }
 
-  function snapToNearest() {
-    // 60% of the way down → close, otherwise open
-    const threshold = maxY * 0.6;
-    setSheet(currentY > threshold ? false : true);
-  }
-
-  function onPointerDown(e) {
+  function onDown(e) {
+    // unify mouse/touch/pointer
+    const y = e.clientY ?? (e.touches && e.touches[0]?.clientY) ?? 0;
     dragging = true;
-    startPointerY = e.clientY ?? (e.touches && e.touches[0]?.clientY) ?? 0;
-    startSheetY   = getSheetY();
-    sheet.style.transition = 'none';
-    try { handle.setPointerCapture?.(e.pointerId); } catch {}
-    e.preventDefault();   // critical on iOS Safari
-  }
+    startPointerY = y;
+    startY = getY();
+    setY(startY, false);
+    showOverlay(true);
 
-  function onPointerMove(e) {
+    // capture keeps events coming to us even if pointer leaves handle
+    try { handle.setPointerCapture?.(e.pointerId); } catch {}
+    e.preventDefault();
+  }
+  function onMove(e) {
     if (!dragging) return;
     const y = e.clientY ?? (e.touches && e.touches[0]?.clientY) ?? 0;
     const dy = y - startPointerY;
-    const target = Math.min(maxY, Math.max(0, startSheetY + dy));
-    setSheetY(target, false);
+    let target = Math.min(maxY, Math.max(0, startY + dy));
+    setY(target, false);
     e.preventDefault();
   }
-
-  function onPointerUp(e) {
+  function onUp(e) {
     if (!dragging) return;
     dragging = false;
     try { handle.releasePointerCapture?.(e.pointerId); } catch {}
-    snapToNearest();
+    snap();
     e.preventDefault();
   }
 
   // Init
   recalcMaxY();
-  setSheet(true); // start open to match your current UI
+  setOpen(true, false);                  // start open
+  // Ensure the sheet sits above the map visually
+  sheet.style.zIndex = '1000';
+  // Make sure header is clickable even if the map uses layers on top
+  handle.style.pointerEvents = 'auto';
 
-  // Listeners (must be non-passive to allow preventDefault)
-  handle.addEventListener('pointerdown', onPointerDown, { passive:false });
-  window.addEventListener('pointermove', onPointerMove, { passive:false });
-  window.addEventListener('pointerup',   onPointerUp,   { passive:false });
-  window.addEventListener('pointercancel', onPointerUp, { passive:false });
+  // Pointer events (non-passive so we can preventDefault)
+  handle.addEventListener('pointerdown', onDown, { passive: false });
+  window.addEventListener('pointermove', onMove, { passive: false });
+  window.addEventListener('pointerup',   onUp,   { passive: false });
+  window.addEventListener('pointercancel', onUp, { passive: false });
 
-  // If you support touch events directly (older Safari), keep these too:
-  handle.addEventListener('touchstart', onPointerDown, { passive:false });
-  window.addEventListener('touchmove',  onPointerMove, { passive:false });
-  window.addEventListener('touchend',   onPointerUp,   { passive:false });
-  window.addEventListener('touchcancel',onPointerUp,   { passive:false });
+  // Touch fallback for older WebKit (some iOS builds still prefer these)
+  handle.addEventListener('touchstart', onDown, { passive: false });
+  window.addEventListener('touchmove',  onMove, { passive: false });
+  window.addEventListener('touchend',   onUp,   { passive: false });
+  window.addEventListener('touchcancel',onUp,   { passive: false });
 
-  // Recompute on rotate / resize
+  // Optional: tap header toggles open/closed (nice UX affordance)
+  handle.addEventListener('click', () => {
+    if (!dragging) setOpen(!open, true);
+  });
+
+  // Recompute on resize / rotate and keep state
   function onResize() {
-    const wasOpen = sheetOpen;
+    const wasOpen = open;
     recalcMaxY();
-    setSheet(wasOpen);
+    setOpen(wasOpen, false);
   }
   window.addEventListener('resize', onResize);
   window.addEventListener('orientationchange', onResize);
