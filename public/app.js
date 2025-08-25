@@ -900,80 +900,107 @@ function updateLegendPosition() {
     legend.style.bottom = `${MIN_PX}px`;
   }
 }
-
 /* ===========================================================
-   MOBILE SHEET — smooth drag & snap
+   MOBILE SHEET — smooth drag & snap (robust)
 =========================================================== */
-const sheet  = document.getElementById('sheet');
-const handle = document.getElementById('sheetHandle');
+(function initMobileSheet() {
+  const sheet  = document.getElementById('sheet');
+  const handle = document.getElementById('sheetHandle') || document.getElementById('sheetHandle') || document.querySelector('.drag');
+  if (!sheet || !handle) return;
 
-const SHEET_PEEK = 52;
-let maxY = 0;
-let sheetOpen = true;
-let dragging = false;
-let startPointerY = 0;
-let startSheetY = 0;
-let currentY = 0;
+  const SHEET_PEEK = 52;     // how many px remain visible when closed
+  let maxY = 0;              // computed from viewport height
+  let sheetOpen = true;      // starts open (matches your CSS default)
+  let dragging = false;
+  let startPointerY = 0;
+  let startSheetY   = 0;
+  let currentY      = 0;
 
-function recalcMaxY(){ maxY = Math.max(0, window.innerHeight - SHEET_PEEK); }
-function getSheetY(){
-  const t = getComputedStyle(sheet).transform;
-  if (!t || t === 'none') return 0;
-  const m = new DOMMatrix(t); return m.m42 || 0;
-}
-function setSheetY(y, withTransition){
-  sheet.style.willChange = 'transform';
-  sheet.style.transition = withTransition ? 'transform 220ms cubic-bezier(.2,.8,.2,1)' : 'none';
-  sheet.style.transform  = `translateY(${y}px)`;
-  currentY = y;
-  updateLegendPosition();
-}
-function setSheet(open){ sheetOpen = open; setSheetY(open ? 0 : maxY, true); }
-function snapToNearest(){
-  const threshold = maxY * 0.6;
-  setSheet(currentY > threshold ? false : true);
-}
-function onPointerDown(e){
-  dragging = true;
-  startPointerY = e.clientY ?? (e.touches && e.touches[0].clientY) ?? 0;
-  startSheetY   = getSheetY();
-  sheet.style.transition = 'none';
-  handle.setPointerCapture?.(e.pointerId);
-  e.preventDefault();
-}
-function onPointerMove(e){
-  if (!dragging) return;
-  const y = e.clientY ?? (e.touches && e.touches[0].clientY) ?? 0;
-  const dy = y - startPointerY;
-  const target = Math.min(maxY, Math.max(0, startSheetY + dy));
-  setSheetY(target, false);
-  e.preventDefault();
-}
-function onPointerUp(e){
-  if (!dragging) return;
-  dragging = false;
-  handle.releasePointerCapture?.(e.pointerId);
-  snapToNearest();
-  e.preventDefault();
-}
+  function recalcMaxY() {
+    // how far we can slide it down until only the "peek" remains
+    maxY = Math.max(0, window.innerHeight - SHEET_PEEK);
+  }
 
-// Init mobile sheet
-recalcMaxY();
-setSheet(true);
-updateLegendPosition();
-sheet.style.touchAction  = 'none';
-handle.style.touchAction = 'none';
-handle.addEventListener('pointerdown', onPointerDown, { passive:false });
-window.addEventListener('pointermove', onPointerMove, { passive:false });
-window.addEventListener('pointerup',   onPointerUp,   { passive:false });
-window.addEventListener('pointercancel', onPointerUp, { passive:false });
-function onResize(){
-  const wasOpen = sheetOpen;
+  function getSheetY() {
+    const t = getComputedStyle(sheet).transform;
+    if (!t || t === 'none') return 0;
+    const m = new DOMMatrix(t);
+    // m41/m42 are translateX/translateY; we only care about Y
+    return m.m42 || 0;
+  }
+
+  function setSheetY(y, withTransition) {
+    sheet.style.willChange = 'transform';
+    sheet.style.transition = withTransition ? 'transform 220ms cubic-bezier(.2,.8,.2,1)' : 'none';
+    sheet.style.transform  = `translateY(${y}px)`;
+    currentY = y;
+    // you were adjusting legend via JS elsewhere; call it if present
+    try { updateLegendPosition?.(); } catch {}
+  }
+
+  function setSheet(open) {
+    sheetOpen = !!open;
+    setSheetY(sheetOpen ? 0 : maxY, true);
+  }
+
+  function snapToNearest() {
+    // 60% of the way down → close, otherwise open
+    const threshold = maxY * 0.6;
+    setSheet(currentY > threshold ? false : true);
+  }
+
+  function onPointerDown(e) {
+    dragging = true;
+    startPointerY = e.clientY ?? (e.touches && e.touches[0]?.clientY) ?? 0;
+    startSheetY   = getSheetY();
+    sheet.style.transition = 'none';
+    try { handle.setPointerCapture?.(e.pointerId); } catch {}
+    e.preventDefault();   // critical on iOS Safari
+  }
+
+  function onPointerMove(e) {
+    if (!dragging) return;
+    const y = e.clientY ?? (e.touches && e.touches[0]?.clientY) ?? 0;
+    const dy = y - startPointerY;
+    const target = Math.min(maxY, Math.max(0, startSheetY + dy));
+    setSheetY(target, false);
+    e.preventDefault();
+  }
+
+  function onPointerUp(e) {
+    if (!dragging) return;
+    dragging = false;
+    try { handle.releasePointerCapture?.(e.pointerId); } catch {}
+    snapToNearest();
+    e.preventDefault();
+  }
+
+  // Init
   recalcMaxY();
-  setSheet(wasOpen);
-}
-window.addEventListener('resize', onResize);
-window.addEventListener('orientationchange', onResize);
+  setSheet(true); // start open to match your current UI
+
+  // Listeners (must be non-passive to allow preventDefault)
+  handle.addEventListener('pointerdown', onPointerDown, { passive:false });
+  window.addEventListener('pointermove', onPointerMove, { passive:false });
+  window.addEventListener('pointerup',   onPointerUp,   { passive:false });
+  window.addEventListener('pointercancel', onPointerUp, { passive:false });
+
+  // If you support touch events directly (older Safari), keep these too:
+  handle.addEventListener('touchstart', onPointerDown, { passive:false });
+  window.addEventListener('touchmove',  onPointerMove, { passive:false });
+  window.addEventListener('touchend',   onPointerUp,   { passive:false });
+  window.addEventListener('touchcancel',onPointerUp,   { passive:false });
+
+  // Recompute on rotate / resize
+  function onResize() {
+    const wasOpen = sheetOpen;
+    recalcMaxY();
+    setSheet(wasOpen);
+  }
+  window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', onResize);
+})();
+
 
 /* ===========================================================
    GEO-TIFF OVERLAY (resilient loader + toggle)
