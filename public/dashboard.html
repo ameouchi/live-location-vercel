@@ -1,352 +1,440 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
+  <title>Dashboard – Saved Paths</title>
   <meta charset="utf-8" />
-  <title>Live Location – Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
 
-  <!-- Mapbox GL JS -->
-  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet">
-  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <!-- Mapbox GL JS & CSS (same version as your main page) -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.js"></script>
 
-  <!-- Turf for small geoprocessing helpers -->
-  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+  <!-- turf.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
 
-  <!-- JSZip to build KMZ (zip of KML) client-side -->
+  <!-- JSZip + FileSaver for KML/KMZ export -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
 
-  <style>
-    :root { --bg:#0b0b0c; --panel:#121317; --text:#e9e9ee; --muted:#9aa0a6; --accent:#4b8bff; }
-    html,body { height:100%; margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial; background:var(--bg); color:var(--text); }
-    .wrap { display:grid; grid-template-columns: 340px 1fr; height:100%; }
-    .left { background:var(--panel); border-right:1px solid rgba(255,255,255,.08); padding:14px 14px 18px; overflow:auto; }
-    .right { position:relative; }
-    #map { position:absolute; inset:0; }
+  <!-- Your shared styles -->
+  <link rel="stylesheet" href="styles.css" />
 
-    h1 { font-size:18px; margin:6px 0 14px; letter-spacing:.2px; }
-    h2 { font-size:12px; color:var(--muted); margin:18px 0 8px; text-transform:uppercase; letter-spacing:.12em; }
-
-    .row { display:grid; gap:8px; }
-    .row.cols-2 { grid-template-columns: 1fr 1fr; }
-    .row + .row { margin-top:10px; }
-
-    .chip { display:flex; gap:6px; align-items:center; padding:8px 10px; background:#191b21; border:1px solid rgba(255,255,255,.08); border-radius:10px; }
-    .chip input, .chip select { width:100%; background:#0e1015; color:var(--text); border:1px solid rgba(255,255,255,.08); padding:8px 10px; border-radius:8px; outline:none; }
-    .chip small { color:var(--muted); }
-
-    .btn { appearance:none; border:0; padding:10px 12px; border-radius:10px; background:var(--accent); color:white; font-weight:600; cursor:pointer; }
-    .btn.secondary { background:#232631; color:#dfe2ea; }
-    .btn.ghost { background:#171922; color:#dfe2ea; border:1px solid rgba(255,255,255,.08); }
-
-    ul#people { list-style:none; padding:0; margin:0; max-height:210px; overflow:auto; }
-    ul#people li { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; border-radius:8px; cursor:pointer; }
-    ul#people li:hover { background:#1a1d27; }
-    ul#people li input { margin:0 6px 0 0; }
-
-    .legend { position:absolute; left:14px; bottom:14px; background:rgba(18,19,23,.9); border:1px solid rgba(255,255,255,.07); padding:8px 10px; border-radius:10px; font-size:12px; color:#cfd3da; }
-
-    .badge { font-size:11px; color:#b8bec7; }
-  </style>
+  <!-- Fonts you already load on the main page -->
+  <link href="https://fonts.googleapis.com/css2?family=DIN+Condensed:wght@400;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div class="wrap">
-    <div class="left">
-      <h1>Dashboard / Documentation</h1>
-      <div class="chip"><small>
-        This page shows everyone’s <b>saved history</b> from <code>/api/saved_geo</code>. Use filters to limit by people and time window, and export the result as <b>KMZ</b>.
-      </small></div>
 
-      <h2>Data</h2>
-      <div class="row cols-2">
-        <button id="refreshBtn" class="btn secondary">Refresh</button>
-        <button id="fitBtn" class="btn ghost">Fit to Data</button>
-      </div>
-      <div class="row"><div class="chip"><div><span class="badge">People in store:</span> <span id="peopleCount">–</span></div></div></div>
-      <div class="row"><div class="chip"><div><span class="badge">Segments loaded:</span> <span id="featCount">–</span></div></div></div>
+  <!-- Map -->
+  <div id="map"></div>
 
-      <h2>Filters</h2>
-      <div class="chip">
-        <input type="text" id="peopleSearch" placeholder="Search names…" />
-      </div>
-      <div class="chip">
-        <small>Check to include</small>
-        <ul id="people"></ul>
-      </div>
-      <div class="row cols-2">
-        <div class="chip">
-          <div style="width:100%">
-            <small>Start (local)</small>
-            <input type="datetime-local" id="startTime">
-          </div>
-        </div>
-        <div class="chip">
-          <div style="width:100%">
-            <small>End (local)</small>
-            <input type="datetime-local" id="endTime">
-          </div>
-        </div>
-      </div>
-      <div class="row cols-2">
-        <button id="applyBtn" class="btn">Apply Filters</button>
-        <button id="clearBtn" class="btn ghost">Clear</button>
-      </div>
-
-      <h2>Export</h2>
-      <div class="row cols-2">
-        <button id="downloadKmzBtn" class="btn">Download KMZ</button>
-        <button id="downloadKmlBtn" class="btn secondary">Download KML</button>
-      </div>
-      <div class="row">
-        <div class="chip"><small>
-          KMZ is a zipped KML; both contain one <b>Placemark</b> per person, filtered to your selection/time window.
-        </small></div>
-      </div>
-    </div>
-
-    <div class="right">
-      <div id="map"></div>
-      <div class="legend">Saved history (lines) + latest position (dots)</div>
-    </div>
+  <!-- Floating chips (same style as your main page) -->
+  <div class="chip">
+    <button id="fitBtn" class="ghost">AJUSTAR AL MAPA</button>
+    <button id="refreshBtn" class="ghost">RECARGAR</button>
+    <button id="downloadKmlBtn" class="ghost">DESCARGAR KML</button>
+    <button id="downloadKmzBtn" class="ghost">DESCARGAR KMZ</button>
   </div>
 
+  <!-- Desktop sidebar (reuse your groups/buttons look) -->
+  <aside id="sidebar">
+    <div class="group">
+      <h1>DOCUMENTACIÓN / DASHBOARD</h1>
+      <div class="hint">Se visualiza el historial persistente desde <code>/api/saved_geo</code>.</div>
+    </div>
+
+    <div class="group">
+      <h3>FILTROS</h3>
+      <div class="row" style="margin-bottom:10px;">
+        <input id="searchPeople" type="text" placeholder="Buscar personas…" />
+      </div>
+
+      <div class="row" style="gap:6px;">
+        <input id="startTime" type="datetime-local" />
+        <input id="endTime"   type="datetime-local" />
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <button id="applyBtn" class="primary">APLICAR</button>
+        <button id="clearBtn" class="ghost">LIMPIAR</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>PERSONAS (selecciona para incluir)</h3>
+      <ul id="peopleList"></ul>
+    </div>
+
+    <div class="group">
+      <div class="row">
+        <div class="hint">Total personas: <span id="peopleCount">–</span></div>
+      </div>
+      <div class="row">
+        <div class="hint">Segmentos mostrados: <span id="featCount">–</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Legend (reuse your legend block) -->
+  <div id="legend">
+    <div class="legend-item"><span></span> Trayectorias guardadas</div>
+    <div class="legend-item"><span class="legend-color"></span> Última posición</div>
+  </div>
+
+  <!-- Mobile sheet (kept minimal; same components/classes) -->
+  <section id="sheet" aria-label="Dashboard">
+    <div id="sheetHeader">
+      <div class="drag" id="sheetHandle"></div>
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:0 4px 6px;">
+        <h1 style="font-weight:1000;">DASHBOARD</h1>
+      </div>
+    </div>
+    <div id="sheetBody">
+      <div class="group">
+        <div class="row" style="margin-bottom:10px;">
+          <input id="searchPeople_m" type="text" placeholder="Buscar personas…" />
+        </div>
+        <div class="row" style="gap:6px;">
+          <input id="startTime_m" type="datetime-local" />
+          <input id="endTime_m"   type="datetime-local" />
+        </div>
+        <div class="controlRow" style="margin-top:8px;">
+          <button id="applyBtn_m" class="primary">APLICAR</button>
+          <button id="clearBtn_m" class="ghost">LIMPIAR</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>PERSONAS</h3>
+        <ul id="peopleList_m"></ul>
+      </div>
+
+      <div class="group">
+        <div class="hint">Personas: <span id="peopleCount_m">–</span> · Segmentos: <span id="featCount_m">–</span></div>
+      </div>
+    </div>
+  </section>
+
   <script>
-    // ====== MAPBOX INIT ======
-    mapboxgl.accessToken = 'pk.eyJ1IjoibGFtZW91Y2hpIiwiYSI6ImNsa3ZqdHZtMDBjbTQzcXBpNzRyc2ljNGsifQ.287002jl7xT9SBub-dbBbQ';
-    const map = new mapboxgl.Map({
-      container: 'map',
-      style: 'mapbox://styles/lameouchi/cme04okvl00be01rydkfj6r43',
-      center: [-100.3846034891744, 20], zoom: 1
-    });
+  // ===== CONFIG =====
+  mapboxgl.accessToken = 'pk.eyJ1IjoibGFtZW91Y2hpIiwiYSI6ImNsa3ZqdHZtMDBjbTQzcXBpNzRyc2ljNGsifQ.287002jl7xT9SBub-dbBbQ';
 
-    let rawFC = { type:'FeatureCollection', features:[] }; // server data
-    let filteredFC = { type:'FeatureCollection', features:[] }; // filtered view
-    const selected = new Set(); // selected people
-    const peopleList = new Set(); // all known people
-    const ids = { lines:'saved-all', heads:'saved-heads' };
+  // ===== MAP =====
+  const map = new mapboxgl.Map({
+    container: 'map',
+    style: 'mapbox://styles/lameouchi/cme04okvl00be01rydkfj6r43',
+    center: [-100.3846034891744, 20],
+    zoom: 1
+  });
 
-    // ====== HELPERS ======
-    const $ = (id) => document.getElementById(id);
-
-    function tsFromLocalInput(el){
-      const v = el.value?.trim();
-      if (!v) return null;
-      const ms = new Date(v).getTime();
-      return Number.isFinite(ms) ? ms : null;
+  // place legend relative to sheet like in your main page
+  function updateLegendPosition() {
+    const legend = document.getElementById('legend');
+    const sheet  = document.getElementById('sheet');
+    const GAP_PX = 10, MIN_PX = 12;
+    if (!legend) return;
+    if (sheet && getComputedStyle(sheet).display !== 'none') {
+      const rect = sheet.getBoundingClientRect();
+      const bottom = Math.max(MIN_PX, Math.round(window.innerHeight - rect.top + GAP_PX));
+      legend.style.position = 'fixed';
+      legend.style.left = '50%';
+      legend.style.transform = 'translateX(-50%)';
+      legend.style.bottom = `${bottom}px`;
+    } else {
+      legend.style.position = 'fixed';
+      legend.style.left = '50%';
+      legend.style.transform = 'translateX(-50%)';
+      legend.style.bottom = `${MIN_PX}px`;
     }
-    function localInputFromTs(ts){
-      if (!Number.isFinite(ts)) return '';
-      const d = new Date(ts);
-      const pad = (n)=>String(n).padStart(2,'0');
-      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    }
+  }
+  window.addEventListener('resize', updateLegendPosition);
+  window.addEventListener('orientationchange', updateLegendPosition);
 
-    function featureToPartsByTime(f, t0, t1){
-      // break a person's LineString into pieces that fall within [t0,t1]
-      const pts = (f.properties.__pts || []);
-      const coords = [];
-      for (const p of pts) coords.push([p.lng, p.lat, p.timestamp]);
+  // ===== DATA STATE =====
+  let rawFC      = { type:'FeatureCollection', features:[] }; // full from server
+  let filteredFC = { type:'FeatureCollection', features:[] }; // after filters
+  const peopleSet     = new Set();  // all people
+  const selectedSet   = new Set();  // selected people (if none -> all)
+  const IDS = { lines:'saved-all', heads:'saved-heads' };
 
-      if (!coords.length) return [];
-      const inRange = (t)=> (t0==null || t>=t0) && (t1==null || t<=t1);
+  // ===== HELPERS =====
+  const $ = (id) => document.getElementById(id);
 
-      const parts = [];
-      let cur = [];
-      for (let i=0;i<coords.length;i++){
-        const [x,y,t] = coords[i];
-        if (inRange(t)) {
-          cur.push([x,y]);
-        } else {
-          if (cur.length>1) parts.push(cur);
-          cur = [];
-        }
+  function tsFromLocalInput(el){
+    const v = el?.value?.trim();
+    if (!v) return null;
+    const t = new Date(v).getTime();
+    return Number.isFinite(t) ? t : null;
+  }
+
+  function computeHeads(fc){
+    const feats = [];
+    for (const f of fc.features){
+      if (f.geometry?.type === 'LineString' && f.geometry.coordinates.length){
+        feats.push({
+          type:'Feature',
+          properties:{ name: f.properties?.name || '' },
+          geometry:{ type:'Point', coordinates: f.geometry.coordinates[f.geometry.coordinates.length - 1] }
+        });
       }
-      if (cur.length>1) parts.push(cur);
-
-      // return as features (one per continuous chunk)
-      return parts.map(seg => ({
-        type:'Feature',
-        properties:{ name:f.properties.name },
-        geometry:{ type:'LineString', coordinates: seg }
-      }));
     }
+    return { type:'FeatureCollection', features:feats };
+  }
 
-    function computeHeads(fc){
-      const heads=[];
-      for (const f of fc.features){
-        if (f.geometry?.type==='LineString' && f.geometry.coordinates.length){
-          heads.push({
-            type:'Feature',
-            properties:{ name:f.properties?.name||'' },
-            geometry:{ type:'Point', coordinates: f.geometry.coordinates[f.geometry.coordinates.length-1] }
-          });
-        }
+  function featureToPartsByTime(f, t0, t1){
+    // Uses per-point timestamps if provided on properties.__pts (recommended).
+    const pts = Array.isArray(f.properties?.__pts) ? f.properties.__pts : [];
+    if (!pts.length || (t0==null && t1==null)) {
+      // no timestamps to filter: return the entire original linestring if exists
+      return f.geometry?.type === 'LineString' && f.geometry.coordinates.length > 1
+        ? [f]
+        : [];
+    }
+    const inRange = (ts)=> (t0==null || ts >= t0) && (t1==null || ts <= t1);
+    const segs = [];
+    let cur = [];
+    for (const p of pts){
+      if (inRange(p.timestamp)) cur.push([p.lng, p.lat]);
+      else {
+        if (cur.length > 1) segs.push(cur);
+        cur = [];
       }
-      return { type:'FeatureCollection', features:heads };
     }
+    if (cur.length > 1) segs.push(cur);
+    return segs.map(seg => ({
+      type:'Feature',
+      properties:{ name:f.properties?.name || '' },
+      geometry:{ type:'LineString', coordinates: seg }
+    }));
+  }
 
-    function updateSidebarStats(){
-      $('peopleCount').textContent = peopleList.size.toString();
-      $('featCount').textContent = filteredFC.features.length.toString();
-    }
+  function updateCounters(){
+    const totalPeople = peopleSet.size;
+    const totalSegs   = filteredFC.features.length;
+    $('peopleCount')  .textContent = totalPeople;
+    $('featCount')    .textContent = totalSegs;
+    $('peopleCount_m')?.textContent = totalPeople;
+    $('featCount_m')  ?.textContent = totalSegs;
+  }
 
-    function buildPeopleUI(filter=''){
-      const ul = $('people');
-      ul.innerHTML='';
-      const q = filter.toLowerCase();
-      const sorted = Array.from(peopleList).sort((a,b)=>a.localeCompare(b,'en',{sensitivity:'base'}));
-      for (const name of sorted){
-        if (q && !name.toLowerCase().includes(q)) continue;
+  function buildPeopleLists(filterText=''){
+    const q = (filterText||'').toLowerCase();
+    const sorted = Array.from(peopleSet).sort((a,b)=>a.localeCompare(b,'en',{sensitivity:'base'}));
+
+    const render = (ulId) => {
+      const ul = $(ulId);
+      if (!ul) return;
+      ul.innerHTML = '';
+      sorted.forEach(name => {
+        if (q && !name.toLowerCase().includes(q)) return;
         const li = document.createElement('li');
+        li.style.display = 'flex';
+        li.style.alignItems = 'center';
+        li.style.justifyContent = 'space-between';
+        li.style.gap = '8px';
+
         const left = document.createElement('span');
-        const cb = document.createElement('input'); cb.type='checkbox'; cb.checked = selected.has(name);
-        cb.addEventListener('change',()=>{ cb.checked ? selected.add(name) : selected.delete(name); });
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selectedSet.size ? selectedSet.has(name) : true;
+        cb.onchange = () => {
+          if (cb.checked) selectedSet.add(name);
+          else selectedSet.delete(name);
+        };
         left.appendChild(cb);
-        left.appendChild(document.createTextNode(name));
+        left.appendChild(document.createTextNode(' ' + name));
         li.appendChild(left);
 
-        const solo = document.createElement('button');
-        solo.className='btn ghost'; solo.textContent='Only';
-        solo.onclick = ()=>{ selected.clear(); selected.add(name); applyFilters(); buildPeopleUI($('peopleSearch').value); };
-        li.appendChild(solo);
+        const only = document.createElement('button');
+        only.className = 'ghost';
+        only.textContent = 'SOLO';
+        only.onclick = () => { selectedSet.clear(); selectedSet.add(name); applyFilters(); buildPeopleLists(q); };
+        li.appendChild(only);
 
         ul.appendChild(li);
+      });
+    };
+
+    render('peopleList');
+    render('peopleList_m');
+  }
+
+  function applyFilters(){
+    const t0 = tsFromLocalInput($('startTime')) || tsFromLocalInput($('startTime_m'));
+    const t1 = tsFromLocalInput($('endTime'))   || tsFromLocalInput($('endTime_m'));
+
+    const who = selectedSet.size ? selectedSet : peopleSet;
+    const out = [];
+    for (const f of rawFC.features){
+      const name = f.properties?.name || '';
+      if (!who.has(name)) continue;
+      const parts = featureToPartsByTime(f, t0, t1);
+      parts.forEach(p => out.push(p));
+    }
+    filteredFC = { type:'FeatureCollection', features: out };
+    drawFiltered();
+    updateCounters();
+  }
+
+  function clearFilters(){
+    selectedSet.clear();
+    if ($('searchPeople'))  $('searchPeople').value  = '';
+    if ($('searchPeople_m'))$('searchPeople_m').value= '';
+    if ($('startTime')) $('startTime').value = '';
+    if ($('endTime'))   $('endTime').value   = '';
+    if ($('startTime_m')) $('startTime_m').value = '';
+    if ($('endTime_m'))   $('endTime_m').value   = '';
+    applyFilters();
+    buildPeopleLists('');
+  }
+
+  async function fetchSaved(){
+    const r = await fetch('/api/saved_geo', { cache:'no-store' });
+    if (!r.ok) throw new Error('GET /api/saved_geo failed');
+    const fc = await r.json();
+
+    peopleSet.clear();
+    rawFC = { type:'FeatureCollection', features: [] };
+
+    // Expect your API to include per-point timestamps on properties.__pts (recommended).
+    // If not present, we’ll still show the lines (time filter becomes pass-through).
+    for (const f of (fc.features||[])){
+      const name = f.properties?.name || 'Desconocido';
+      peopleSet.add(name);
+      // Keep original geometry
+      const clone = JSON.parse(JSON.stringify(f));
+      // Ensure __pts array exists if backend already augments it.
+      if (!Array.isArray(clone.properties.__pts)) {
+        // fallback: try to create synthetic timestamps so UI keeps working
+        const coords = clone.geometry?.coordinates || [];
+        const startTs = Number.isFinite(clone.properties?.startTs) ? clone.properties.startTs : Date.now();
+        clone.properties.__pts = coords.map((c, i) => ({ lng:c[0], lat:c[1], timestamp: startTs + i*1000 }));
       }
+      rawFC.features.push(clone);
     }
 
-    function applyFilters(){
-      const t0 = tsFromLocalInput($('startTime'));
-      const t1 = tsFromLocalInput($('endTime'));
-      const who = selected.size ? selected : peopleList;
+    buildPeopleLists($('searchPeople')?.value || $('searchPeople_m')?.value || '');
+    applyFilters();
+  }
 
-      const out = [];
-      for (const f of rawFC.features){
-        const name = f.properties?.name || '';
-        if (!who.has(name)) continue;
-        const parts = featureToPartsByTime(f, t0, t1);
-        parts.forEach(p => out.push(p));
-      }
-      filteredFC = { type:'FeatureCollection', features: out };
-      drawFiltered();
-      updateSidebarStats();
-    }
+  function drawFiltered(){
+    if (map.getSource(IDS.lines)) map.getSource(IDS.lines).setData(filteredFC);
+    const heads = computeHeads(filteredFC);
+    if (map.getSource(IDS.heads)) map.getSource(IDS.heads).setData(heads);
+  }
 
-    function clearFilters(){
-      selected.clear();
-      $('peopleSearch').value='';
-      $('startTime').value=''; $('endTime').value='';
-      applyFilters();
-      buildPeopleUI();
-    }
+  function fitToData(){
+    const fc = filteredFC.features.length ? filteredFC : rawFC;
+    if (!fc.features.length) return;
+    const bbox = turf.bbox(fc);
+    map.fitBounds(bbox, { padding: { top:20, right:20, bottom:280, left:20 } });
+  }
 
-    function drawFiltered(){
-      // lines
-      if (map.getSource(ids.lines)) map.getSource(ids.lines).setData(filteredFC);
-      // heads
-      const heads = computeHeads(filteredFC);
-      if (map.getSource(ids.heads)) map.getSource(ids.heads).setData(heads);
-    }
-
-    function fitToData(){
-      try{
-        const fc = filteredFC.features.length ? filteredFC : rawFC;
-        if (!fc.features.length) return;
-        const bb = turf.bbox(fc);
-        map.fitBounds(bb, { padding:40, animate:true });
-      }catch{}
-    }
-
-    async function fetchSaved(){
-      const r = await fetch('/api/saved_geo', { cache:'no-store' });
-      if (!r.ok) throw new Error('GET /api/saved_geo failed');
-      const fc = await r.json();
-      // Attach raw points (we’ll need timestamps); your API already gives only lines.
-      // We’ll request per-person raw points by fetching paths again if you later expose them.
-      // For now we reconstruct "timestamps" by spreading evenly (if properties missing).
-      // Better: augment API to include per-point timestamps in a property.
-      rawFC = { type:'FeatureCollection', features: [] };
-
-      // The code below expects you stored points per person with timestamps.
-      // If your /api/saved_geo already had them, attach them on properties.__pts.
-      // Here we simulate by assuming each vertex is a point without ts (fallback).
-      for (const f of (fc.features||[])){
-        const name = f.properties?.name || 'Unknown';
-        peopleList.add(name);
-        // Try to keep points with ts if backend provided them on custom prop
-        // (Skip if you don’t have it; the time filter will act as pass-through)
-        f.properties.__pts = (f.properties.__pts || []).length
-          ? f.properties.__pts
-          : (f.geometry.coordinates||[]).map((c,i)=>({ lng:c[0], lat:c[1], timestamp: (f.properties.startTs||Date.now()) + i*1000 }));
-        rawFC.features.push(f);
-      }
-      buildPeopleUI($('peopleSearch').value);
-      applyFilters();
-    }
-
-    function kmlEscape(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-    function buildKmlFromFC(fc){
-      const header = `<?xml version="1.0" encoding="UTF-8"?>
+  function kmlEscape(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function buildKmlFromFC(fc){
+    const header = `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
   <name>Saved Paths</name>
-  <Style id="line">
-    <LineStyle><color>ff5555ff</color><width>3</width></LineStyle>
-  </Style>`;
-      const body = fc.features.map((f)=>{
-        const name = kmlEscape(f.properties?.name || 'Unknown');
-        const coords = (f.geometry?.coordinates||[]).map(([x,y])=>`${x},${y},0`).join(' ');
-        return `
+  <Style id="line"><LineStyle><color>ff5555ff</color><width>3</width></LineStyle></Style>`;
+    const body = fc.features.map(f => {
+      const name = kmlEscape(f.properties?.name || 'Unknown');
+      const coords = (f.geometry?.coordinates||[]).map(([x,y])=>`${x},${y},0`).join(' ');
+      return `
   <Placemark>
     <name>${name}</name>
     <styleUrl>#line</styleUrl>
     <LineString><tessellate>1</tessellate><coordinates>${coords}</coordinates></LineString>
   </Placemark>`;
-      }).join('\n');
-      const footer = `\n</Document>\n</kml>`;
-      return header + body + footer;
-    }
+    }).join('\n');
+    return header + body + '\n</Document>\n</kml>';
+  }
 
-    async function downloadKML(){
-      const fc = filteredFC.features.length ? filteredFC : rawFC;
-      const kml = buildKmlFromFC(fc);
-      const blob = new Blob([kml], { type:'application/vnd.google-earth.kml+xml' });
-      saveAs(blob, 'paths.kml');
-    }
+  async function downloadKML(){
+    const fc = filteredFC.features.length ? filteredFC : rawFC;
+    const kml = buildKmlFromFC(fc);
+    const blob = new Blob([kml], { type:'application/vnd.google-earth.kml+xml' });
+    saveAs(blob, 'paths.kml');
+  }
+  async function downloadKMZ(){
+    const fc = filteredFC.features.length ? filteredFC : rawFC;
+    const kml = buildKmlFromFC(fc);
+    const zip = new JSZip();
+    zip.file('doc.kml', kml);
+    const blob = await zip.generateAsync({ type:'blob', compression:'DEFLATE' });
+    saveAs(new Blob([blob], { type:'application/vnd.google-earth.kmz' }), 'paths.kmz');
+  }
 
-    async function downloadKMZ(){
-      const fc = filteredFC.features.length ? filteredFC : rawFC;
-      const kml = buildKmlFromFC(fc);
-      const zip = new JSZip();
-      zip.file('doc.kml', kml);
-      const blob = await zip.generateAsync({ type:'blob', compression:'DEFLATE' });
-      // KMZ is just a zipped KML with .kmz extension
-      saveAs(new Blob([blob], { type:'application/vnd.google-earth.kmz' }), 'paths.kmz');
-    }
-
-    // ====== MAP LAYERS ======
-    map.on('load', async () => {
-      map.addSource(ids.lines, { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
-      map.addLayer({ id:ids.lines, type:'line', source:ids.lines,
-        paint:{ 'line-color':'#4b8bff', 'line-width':3, 'line-opacity':0.8 }
-      });
-
-      map.addSource(ids.heads, { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
-      map.addLayer({ id:ids.heads, type:'circle', source:ids.heads,
-        paint:{ 'circle-radius':6, 'circle-color':'#111', 'circle-stroke-color':'#fff', 'circle-stroke-width':2 }
-      });
-
-      await fetchSaved();
-      fitToData();
+  // ===== MAP LAYERS =====
+  map.on('load', async () => {
+    // saved lines
+    map.addSource(IDS.lines, { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
+    map.addLayer({
+      id: IDS.lines, type:'line', source: IDS.lines,
+      paint:{
+        'line-color':'#0e01f5',
+        'line-width': 3,
+        'line-opacity': 0.75
+      }
     });
 
-    // ====== UI HOOKS ======
-    $('refreshBtn').onclick = async ()=>{ await fetchSaved(); fitToData(); };
-    $('fitBtn').onclick = fitToData;
-    $('applyBtn').onclick = applyFilters;
-    $('clearBtn').onclick = clearFilters;
-    $('downloadKmlBtn').onclick = downloadKML;
-    $('downloadKmzBtn').onclick = downloadKMZ;
-    $('peopleSearch').addEventListener('input', (e)=> buildPeopleUI(e.target.value));
+    // latest head per person
+    map.addSource(IDS.heads, { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
+    map.addLayer({
+      id: IDS.heads, type:'circle', source: IDS.heads,
+      paint:{
+        'circle-radius': 6,
+        'circle-color': '#ffffff',
+        'circle-stroke-color': '#0e01f5',
+        'circle-stroke-width': 2
+      }
+    });
+
+    await fetchSaved();
+    fitToData();
+    updateLegendPosition();
+  });
+
+  // ===== UI HOOKS =====
+  $('refreshBtn').onclick = async () => { await fetchSaved(); fitToData(); };
+  $('fitBtn').onclick     = fitToData;
+
+  $('applyBtn').onclick   = applyFilters;
+  $('clearBtn').onclick   = clearFilters;
+
+  $('applyBtn_m') ?.onclick = applyFilters;
+  $('clearBtn_m') ?.onclick = clearFilters;
+
+  $('searchPeople')   ?.addEventListener('input', (e)=> buildPeopleLists(e.target.value));
+  $('searchPeople_m') ?.addEventListener('input', (e)=> buildPeopleLists(e.target.value));
+
+  $('downloadKmlBtn').onclick = downloadKML;
+  $('downloadKmzBtn').onclick = downloadKMZ;
+
+  // Mobile sheet drag (reuse from your main page structure if you want; keeping minimal here)
+  const sheet = $('sheet'), handle = $('sheetHandle');
+  if (sheet && handle){
+    let dragging=false, startY=0, startT=0, maxY=0, open=true;
+    const SHEET_PEEK = 52;
+    const recalc = ()=>{ maxY = Math.max(0, window.innerHeight - SHEET_PEEK); };
+    const getY = ()=>{
+      const t = getComputedStyle(sheet).transform;
+      if (!t || t==='none') return 0;
+      const m = new DOMMatrix(t); return m.m42 || 0;
+    };
+    const setY = (y, tr)=>{ sheet.style.transition = tr ? 'transform 220ms cubic-bezier(.2,.8,.2,1)' : 'none'; sheet.style.transform = `translateY(${y}px)`; updateLegendPosition(); };
+    function snap(){ const y = getY(); open = y < maxY * 0.6; setY(open ? 0 : maxY, true); }
+    function down(e){ dragging=true; startY=(e.touches?e.touches[0].clientY:e.clientY); startT=getY(); sheet.style.transition='none'; handle.setPointerCapture?.(e.pointerId); e.preventDefault(); }
+    function move(e){ if(!dragging) return; const y=(e.touches?e.touches[0].clientY:e.clientY); const dy=y-startY; const tgt=Math.min(maxY, Math.max(0, startT + dy)); setY(tgt, false); e.preventDefault(); }
+    function up(e){ if(!dragging) return; dragging=false; handle.releasePointerCapture?.(e.pointerId); snap(); e.preventDefault(); }
+    recalc(); setY(0,true); updateLegendPosition();
+    handle.addEventListener('pointerdown', down, { passive:false });
+    window.addEventListener('pointermove', move, { passive:false });
+    window.addEventListener('pointerup',   up,   { passive:false });
+    window.addEventListener('pointercancel', up, { passive:false });
+    window.addEventListener('resize', ()=>{ const wasOpen=open; recalc(); setY(wasOpen?0:maxY,true); });
+    window.addEventListener('orientationchange', ()=>{ const wasOpen=open; recalc(); setY(wasOpen?0:maxY,true); });
+  }
   </script>
 </body>
 </html>
