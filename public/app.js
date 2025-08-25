@@ -904,35 +904,30 @@ function updateLegendPosition() {
    MOBILE SHEET — robust drag with overlay + snap
 =========================================================== */
 (function initMobileSheet() {
-  const sheet  = document.getElementById('sheet');
-  const handle = document.getElementById('sheetHandle') || document.querySelector('.drag');
+  const sheet   = document.getElementById('sheet');
+  const handle  = document.getElementById('sheetHandle') || document.querySelector('.drag');
   const overlay = document.getElementById('sheetDragOverlay');
+  const hotspot = document.getElementById('sheetHotspot');
 
-  if (!sheet || !handle) {
-    console.warn('[sheet] Missing #sheet or #sheetHandle');
-    return;
-  }
-  if (!overlay) {
-    console.warn('[sheet] Missing #sheetDragOverlay; create one to prevent map steals');
-  }
+  // ... (keep the rest)
 
-  const SHEET_PEEK = 52; // px of sheet left visible when "closed"
-  let maxY = 0;          // computed from viewport
-  let open = true;       // start open, matches your current UI
-  let dragging = false;
-  let startPointerY = 0;
-  let startY = 0;        // starting translateY
-  let currentY = 0;
+  const SHEET_PEEK = 52;      // your visual peek
+  const CLOSED_OFFSET = 24;   // keep 24px extra *above* the peek so the handle never disappears
+
+  let maxY = 0;
+  let open = true;
+  // ...
 
   function recalcMaxY() {
+    // base maxY: leave the peek visible
     maxY = Math.max(0, window.innerHeight - SHEET_PEEK);
   }
-  function getY() {
-    const t = getComputedStyle(sheet).transform;
-    if (!t || t === 'none') return 0;
-    const m = new DOMMatrix(t);
-    return m.m42 || 0;
+
+  function closedY() {
+    // stop just short of maxY so the header/handle always remains visible (above the iOS bar)
+    return Math.max(0, maxY - CLOSED_OFFSET);
   }
+
   function setY(y, animate) {
     sheet.style.willChange = 'transform';
     sheet.style.transition = animate ? 'transform 220ms cubic-bezier(.2,.8,.2,1)' : 'none';
@@ -940,83 +935,41 @@ function updateLegendPosition() {
     currentY = y;
     try { updateLegendPosition?.(); } catch {}
   }
+
   function setOpen(nextOpen, animate = true) {
     open = !!nextOpen;
-    setY(open ? 0 : maxY, animate);
+    setY(open ? 0 : closedY(), animate);
+    // show hotspot when closed so you can tap anywhere at bottom to reopen
+    if (hotspot) hotspot.style.display = open ? 'none' : 'block';
   }
-  function showOverlay(show) {
-    if (!overlay) return;
-    overlay.style.display = show ? 'block' : 'none';
-  }
+
   function snap() {
-    const threshold = maxY * 0.6;          // >60% down = close
+    const threshold = maxY * 0.6;
     setOpen(currentY <= threshold, true);
     showOverlay(false);
   }
 
-  function onDown(e) {
-    // unify mouse/touch/pointer
-    const y = e.clientY ?? (e.touches && e.touches[0]?.clientY) ?? 0;
-    dragging = true;
-    startPointerY = y;
-    startY = getY();
-    setY(startY, false);
-    showOverlay(true);
-
-    // capture keeps events coming to us even if pointer leaves handle
-    try { handle.setPointerCapture?.(e.pointerId); } catch {}
-    e.preventDefault();
-  }
-  function onMove(e) {
-    if (!dragging) return;
-    const y = e.clientY ?? (e.touches && e.touches[0]?.clientY) ?? 0;
-    const dy = y - startPointerY;
-    let target = Math.min(maxY, Math.max(0, startY + dy));
-    setY(target, false);
-    e.preventDefault();
-  }
-  function onUp(e) {
-    if (!dragging) return;
-    dragging = false;
-    try { handle.releasePointerCapture?.(e.pointerId); } catch {}
-    snap();
-    e.preventDefault();
-  }
-
   // Init
   recalcMaxY();
-  setOpen(true, false);                  // start open
-  // Ensure the sheet sits above the map visually
-  sheet.style.zIndex = '1000';
-  // Make sure header is clickable even if the map uses layers on top
-  handle.style.pointerEvents = 'auto';
+  setOpen(true, false);
 
-  // Pointer events (non-passive so we can preventDefault)
-  handle.addEventListener('pointerdown', onDown, { passive: false });
-  window.addEventListener('pointermove', onMove, { passive: false });
-  window.addEventListener('pointerup',   onUp,   { passive: false });
-  window.addEventListener('pointercancel', onUp, { passive: false });
+  // Hotspot to reopen if handle ever gets too low
+  if (hotspot) {
+    hotspot.addEventListener('click', () => setOpen(true, true));
+    hotspot.addEventListener('touchend', () => setOpen(true, true), { passive: true });
+  }
 
-  // Touch fallback for older WebKit (some iOS builds still prefer these)
-  handle.addEventListener('touchstart', onDown, { passive: false });
-  window.addEventListener('touchmove',  onMove, { passive: false });
-  window.addEventListener('touchend',   onUp,   { passive: false });
-  window.addEventListener('touchcancel',onUp,   { passive: false });
+  // ... (keep pointer handlers as before)
 
-  // Optional: tap header toggles open/closed (nice UX affordance)
-  handle.addEventListener('click', () => {
-    if (!dragging) setOpen(!open, true);
-  });
-
-  // Recompute on resize / rotate and keep state
   function onResize() {
     const wasOpen = open;
     recalcMaxY();
-    setOpen(wasOpen, false);
+    setOpen(wasOpen, false);      // re-apply with new closedY()
   }
   window.addEventListener('resize', onResize);
   window.addEventListener('orientationchange', onResize);
 })();
+
 
 
 /* ===========================================================

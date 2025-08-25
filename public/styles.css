@@ -150,6 +150,19 @@ button:active{ transform: translateY(15px); }
   pointer-events: auto;           /* eats pointer events while visible */
 }
 
+/* Reopen hotspot shown when the sheet is closed */
+#sheetHotspot {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 72px;                 /* big enough to sit above iOS bar */
+  z-index: 1001;
+  display: none;                /* JS toggles this */
+  background: transparent;      /* invisible tap area */
+  pointer-events: auto;
+}
+
 
 .controlRow{
   display:grid; grid-template-columns: 1fr 1fr; gap:0px;
