@@ -16,8 +16,10 @@ function isFiniteNum(n){ return typeof n === 'number' && Number.isFinite(n); }
 async function addPoint(name, coords, timestamp) {
   const key = `path:${name}`;
   const point = { lat: coords.lat, lng: coords.lng, timestamp };
+
   // Keep an index of all people in a Set
   await kv.sadd('people', name);
+
   // Append to that person's list (right side = chronological)
   await kv.rpush(key, point);
 
@@ -36,10 +38,10 @@ async function buildFeatureCollection() {
 
   for (const name of people) {
     const arr = await kv.lrange(`path:${name}`, 0, -1); // returns array of points
-    // Some KV clients return raw; ensure objects:
+    // Some KV clients return raw strings; ensure objects:
     const pts = (arr || []).map(v => (typeof v === 'string' ? JSON.parse(v) : v));
-
     if (!pts.length) continue;
+
     const coords = pts.map(p => [p.lng, p.lat]);
     const first = pts[0]?.timestamp ?? null;
     const last  = pts[pts.length - 1]?.timestamp ?? null;
