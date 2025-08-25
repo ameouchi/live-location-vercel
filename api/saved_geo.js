@@ -1,47 +1,64 @@
 // api/saved_geo.js
-// Persistent paths using Vercel KV (Redis). Data survives restarts and redeploys.
+// Persistent paths using the Redis integration (REDIS_URL). Data survives restarts/redeploys.
 
-import { kv } from '@vercel/kv';
+import { createClient } from 'redis';
 
 export const config = { api: { bodyParser: true } };
 
+// ----- Redis client (singleton) -----
+let client;
+let ready = false;
+async function getRedis() {
+  if (!client) {
+    client = createClient({ url: process.env.REDIS_URL });
+    client.on('error', (e) => console.error('[redis] error', e));
+    await client.connect();
+    ready = true;
+  } else if (!ready) {
+    await client.connect();
+    ready = true;
+  }
+  return client;
+}
+
+// ----- CORS -----
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
-
 function isFiniteNum(n){ return typeof n === 'number' && Number.isFinite(n); }
 
-async function addPoint(name, coords, timestamp) {
-  const key = `path:${name}`;
+// Keys
+const PEOPLE_SET = 'people';               // set of all names
+const PATH_KEY = (name) => `path:${name}`; // list per person (JSON strings)
+
+// Append a point, keep optional cap
+async function addPoint(redis, name, coords, timestamp) {
+  const key = PATH_KEY(name);
   const point = { lat: coords.lat, lng: coords.lng, timestamp };
+  await redis.sAdd(PEOPLE_SET, name);                     // index of all people
+  await redis.rPush(key, JSON.stringify(point));          // append in order
 
-  // Keep an index of all people in a Set
-  await kv.sadd('people', name);
-
-  // Append to that person's list (right side = chronological)
-  await kv.rpush(key, point);
-
-  // Optional cap to prevent unbounded growth per person
+  // Optional cap
   const MAX_POINTS = 5000;
-  const len = await kv.llen(key);
+  const len = await redis.lLen(key);
   if (len > MAX_POINTS) {
-    // Trim to last MAX_POINTS items (Redis LTRIM is inclusive)
-    await kv.ltrim(key, len - MAX_POINTS, -1);
+    // keep last MAX_POINTS
+    await redis.lTrim(key, len - MAX_POINTS, -1);
   }
 }
 
-async function buildFeatureCollection() {
-  const people = await kv.smembers('people'); // ['Ana', 'Ben', ...]
+async function buildFeatureCollection(redis) {
+  const people = await redis.sMembers(PEOPLE_SET); // ['Ana', 'Ben', ...]
   const features = [];
-
   for (const name of people) {
-    const arr = await kv.lrange(`path:${name}`, 0, -1); // returns array of points
-    // Some KV clients return raw strings; ensure objects:
-    const pts = (arr || []).map(v => (typeof v === 'string' ? JSON.parse(v) : v));
-    if (!pts.length) continue;
+    const raw = await redis.lRange(PATH_KEY(name), 0, -1);
+    const pts = (raw || []).map(s => {
+      try { return JSON.parse(s); } catch { return null; }
+    }).filter(Boolean);
 
+    if (!pts.length) continue;
     const coords = pts.map(p => [p.lng, p.lat]);
     const first = pts[0]?.timestamp ?? null;
     const last  = pts[pts.length - 1]?.timestamp ?? null;
@@ -52,7 +69,6 @@ async function buildFeatureCollection() {
       geometry: { type: 'LineString', coordinates: coords }
     });
   }
-
   return { type: 'FeatureCollection', features };
 }
 
@@ -61,6 +77,8 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
+    const redis = await getRedis();
+
     if (req.method === 'POST') {
       const body = req.body || {};
       const updates = Array.isArray(body.updates) ? body.updates : [body];
@@ -70,40 +88,31 @@ export default async function handler(req, res) {
         const { lat, lng } = u.coords || {};
         if (!isFiniteNum(lat) || !isFiniteNum(lng)) continue;
         const ts = isFiniteNum(u.timestamp) ? u.timestamp : Date.now();
-        await addPoint(u.name, { lat, lng }, ts);
+        await addPoint(redis, u.name.trim(), { lat, lng }, ts);
       }
 
-      const people = await kv.smembers('people');
+      const people = await redis.sMembers(PEOPLE_SET);
       return res.status(200).json({ ok: true, people });
     }
 
     if (req.method === 'GET') {
-      const fc = await buildFeatureCollection();
+      const fc = await buildFeatureCollection(redis);
       res.setHeader('Content-Type', 'application/json');
       return res.status(200).json(fc);
     }
 
     if (req.method === 'DELETE') {
-      // Optional cleanup endpoints:
-      //   DELETE /api/saved_geo           -> clear all
-      //   DELETE /api/saved_geo?name=Ana  -> clear one person
+      // DELETE /api/saved_geo           -> clear all
+      // DELETE /api/saved_geo?name=Ana  -> clear one person
       const name = (req.query?.name || '').toString().trim();
       if (name) {
-        await kv.del(`path:${name}`);
-        await kv.srem('people', name);
+        await redis.del(PATH_KEY(name));
+        await redis.sRem(PEOPLE_SET, name);
       } else {
-        const people = await kv.smembers('people');
-        const keys = people.map(n => `path:${n}`);
-        if (keys.length) await kv.del(...keys);
-        await kv.del('people');
+        const people = await redis.sMembers(PEOPLE_SET);
+        const keys = people.map(PATH_KEY);
+        if (keys.length) await redis.del(keys);
+        await redis.del(PEOPLE_SET);
       }
-      const remaining = await kv.smembers('people');
-      return res.status(200).json({ ok: true, people: remaining });
-    }
-
-    return res.status(405).json({ error: 'Method Not Allowed' });
-  } catch (e) {
-    console.error('saved_geo error:', e);
-    return res.status(500).json({ error: 'Internal Server Error' });
-  }
-}
+      const remaining = await redis.sMembers(PEOPLE_SET);
+      return res.status(200).json({ ok: true
