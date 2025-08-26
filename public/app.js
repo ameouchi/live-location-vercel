@@ -19,7 +19,7 @@ map.on('load', () => {
 =========================================================== */
 let audioCtx = null, masterGain = null;
 const playingSources = new Set();
-const MAX_SIMULTANEOUS = 6;
+const MAX_SIMULTANEOUS = 24; // allow more, since LOOPS now use per-cell sources
 let interactionBound = false;
 
 function setCtxText(txt){
@@ -129,99 +129,20 @@ function getLoopPoints(buf, thresh = 0.0008, padSamples = 64){
   return pts;
 }
 
-const activeLoopByIdx = new Map(); // idx -> { handle, count }
-
-function startZoneSound(buffer) {
-  if (!buffer) return null;
-  if (playingSources.size >= MAX_SIMULTANEOUS) {
-    const oldest = playingSources.values().next().value;
-    stopHandle(oldest); playingSources.delete(oldest);
-  }
-  const src = audioCtx.createBufferSource();
-  const g = audioCtx.createGain();
-
-  const { startSec, endSec, durSec } = getLoopPoints(buffer);
-  src.buffer = buffer;
-  src.loop = true;
-  const minSpan = 0.01;
-  const L = Math.max(startSec, 0);
-  const R = Math.max(L + minSpan, Math.min(endSec, durSec));
-  src.loopStart = L;
-  src.loopEnd   = R;
-
-  g.gain.setValueAtTime(0, audioCtx.currentTime);
-  g.gain.linearRampToValueAtTime(1, audioCtx.currentTime + 0.15);
-  src.connect(g).connect(masterGain || audioCtx.destination);
-  src.start(0);
-
-  const handle = { src, gain: g };
-  playingSources.add(handle);
-  return handle;
-}
-
-function stopHandle(handle){
-  if (!handle) return;
-  try{
-    const now = audioCtx.currentTime;
-    handle.gain.gain.cancelScheduledValues(now);
-    handle.gain.gain.setValueAtTime(handle.gain.gain.value, now);
-    handle.gain.gain.linearRampToValueAtTime(0, now + 0.12);
-    setTimeout(()=>{ try{ handle.src.stop(0); handle.src.disconnect(); handle.gain.disconnect(); } catch{} playingSources.delete(handle); },130);
-  }catch{}
-}
-function stopAllSounds(){
-  try{
-    for (const h of Array.from(playingSources)) {
-      try { h.gain?.gain?.setValueAtTime?.(0, audioCtx?.currentTime || 0); } catch {}
-      try { h.src?.stop?.(0); } catch {}
-      try { h.src?.disconnect?.(); } catch {}
-      try { h.gain?.disconnect?.(); } catch {}
-      playingSources.delete(h);
-    }
-  }catch{}
-}
-
-// --- Playback-rate mapping for LOOPS (closer to DN=0 → faster) ---
-const PB_MIN = 0.88;   // slowest (far from the Acequia)
-const PB_MAX = 1.35;   // fastest (closest to DN=0)
-const PB_GAMMA = 1.15; // curve shaping; >1 biases more time at slower rates
-
-function dnToPlaybackRate(dn, dnMin, dnMaxTarget = 0){
-  // Clamp DN into [dnMin, dnMaxTarget] (dnMaxTarget defaults to 0 so “closest to 0” wins)
-  const lo = Math.min(dnMin, dnMaxTarget);
-  const hi = Math.max(dnMin, dnMaxTarget);
-  const clamped = Math.min(hi, Math.max(lo, dn));
-
-  // Normalize so dnMin -> 0, 0 (or dnMaxTarget) -> 1
-  const t = (clamped - dnMin) / (dnMaxTarget - dnMin || 1);
-  const shaped = Math.pow(Math.min(1, Math.max(0, t)), PB_GAMMA);
-
-  return PB_MIN + shaped * (PB_MAX - PB_MIN);
-}
-
 /* ===========================================================
-   DETERMINISTIC GEIGER CLICKS (rate ∝ DN)
+   GEIGER (unchanged, for GEIGER mode)
 =========================================================== */
 // Clicks per second based on distance-to-0 DN
-// DN=0 → fast (6 Hz), DN=11 → slow (1 Hz)
 const RATE_NEAR_HZ = 6.0; // at DN ≈ 0
 const RATE_FAR_HZ  = 1.0; // at DN ≈ 11
-const RATE_GAMMA   = 1.25; // curve shaping (↑ = stronger speed-up near 0)
+const RATE_GAMMA   = 1.25;
 
-/**
- * Map DN to clicks/sec. Works whether your DN is 0..11 or negative.
- * If your data is negative (e.g. -11..0), we use |DN|.
- */
 function dnToRateHz(dn){
-  // clamp 0..11 using absolute value so -11..0 works too
   const dnAbs = Math.min(11, Math.max(0, Math.abs(dn)));
-  // t = 0 near 0, 1 far; then shape so it speeds up more near 0
-  const t = dnAbs / 11;            // 0 (near) → 1 (far)
-  const shaped = Math.pow(1 - t, RATE_GAMMA); // 1 (near) → 0 (far)
+  const t = dnAbs / 11;
+  const shaped = Math.pow(1 - t, RATE_GAMMA);
   return RATE_FAR_HZ + shaped * (RATE_NEAR_HZ - RATE_FAR_HZ);
 }
-
-
 
 function geigerClick(vol = 0.14){
   if (!audioCtx) return;
@@ -252,28 +173,13 @@ function geigerClick(vol = 0.14){
 const cellTimers = [];
 function startCellClicks(i, dn){
   createContextIfNeeded();
-
   const hz = dnToRateHz(dn);
-  const periodMs = Math.max(50, 1000 / hz); // 6 Hz → ~167 ms, 1 Hz → 1000 ms
-
+  const periodMs = Math.max(50, 1000 / hz);
   stopCellClicks(i);
   const id = setInterval(() => geigerClick(0.14), periodMs);
-
   cellTimers[i] = { id, hz, dn };
   console.info(`[AUDIO] Zone ${i} DN ${dn} → ${hz.toFixed(2)} Hz (${periodMs.toFixed(0)} ms)`);
 }
-
-
-function updateCellRate(i, dn){
-  // Only update if the rate changes significantly
-  const hz = dnToRateHz(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
-  const prev = cellTimers[i]?.hz || 0;
-  if (Math.abs(hz - prev) > 0.5) {
-    startCellClicks(i, dn);
-  }
-}
-
-
 function stopCellClicks(i){
   const t = cellTimers[i];
   if (t && t.id){ clearInterval(t.id); }
@@ -305,105 +211,106 @@ async function getSoundBuffer(idx){
   return buf;
 }
 
-let loopHandles = [], loopMeta = [];
+/* ===========================================================
+   LOOPS MODE (pulsed 1..11x/sec depending on DN)
+=========================================================== */
 
-function retainSharedLoop(idx, buf){
-  let rec = activeLoopByIdx.get(idx);
-  if (!rec){
-    const h = startZoneSound(buf);
-    rec = { handle: h, count: 0 };
-    activeLoopByIdx.set(idx, rec);
-  }
-  rec.count++;
-  return rec.handle;
-}
-function releaseSharedLoop(idx){
-  const rec = activeLoopByIdx.get(idx);
-  if (!rec) return;
-  rec.count--;
-  if (rec.count <= 0){
-    stopHandle(rec.handle);
-    activeLoopByIdx.delete(idx);
-  }
+// === LOOPS: pulse rate by DN ===
+// DN = 0  → 11 pulses/sec
+// DN = 11 →  1 pulse/sec
+const LOOP_RATE_NEAR_HZ = 11.0;
+const LOOP_RATE_FAR_HZ  = 1.0;
+const LOOP_RATE_GAMMA   = 1.20; // shape; 1 = linear, >1 focuses speed-up near DN=0
+
+function dnToLoopHz(dn){
+  const dnAbs = Math.min(11, Math.max(0, Math.abs(dn))); // works with negative DN too
+  const t = dnAbs / 11;                 // 0 (near) → 1 (far)
+  const shaped = Math.pow(1 - t, LOOP_RATE_GAMMA); // 1 (near) → 0 (far)
+  return LOOP_RATE_FAR_HZ + shaped * (LOOP_RATE_NEAR_HZ - LOOP_RATE_FAR_HZ);
 }
 
-async function startLoopsForIndex(i, dn){
-  const idx = dnToSoundIndex(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
-  const buf = await getSoundBuffer(idx);
-  if (!buf) return;
-  createContextIfNeeded();
-  const h = retainSharedLoop(idx, buf);
-  loopHandles[i] = h;
-  loopMeta[i] = { idx, dn };
-  console.info(`[AUDIO] Zone ${i} (DN ${dn}) → zone_sound${idx}.mp3 (gapless)`);
+// Pulse envelope (how each “play” feels)
+const PULSE_ATTACK = 0.015; // seconds
+const PULSE_PEAK   = 0.060; // hold at top
+const PULSE_DECAY  = 0.180; // fade out
+const PULSE_FLOOR  = 0.0005; // near-silence between pulses
+const PULSE_GAIN   = 1.0;   // max loudness per pulse
+
+// Per-zone loop state (individual source & gain + timer)
+let loopHandles = []; // [{ src, gain, timer, hz, idx, dn, startedAt } ...] by zone index
+
+function stopLoopHandle(h){
+  if (!h) return;
+  try{
+    if (h.timer) clearInterval(h.timer);
+    const now = audioCtx.currentTime;
+    h.gain.gain.cancelScheduledValues(now);
+    h.gain.gain.setTargetAtTime(0, now, 0.08);
+    setTimeout(()=>{
+      try{ h.src.stop(0); h.src.disconnect(); h.gain.disconnect(); }catch{}
+    }, 150);
+  }catch{}
 }
-
-async function startLoopsForIndex(i, dn){
-  const idx = dnToSoundIndex(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
-  const buf = await getSoundBuffer(idx);
-  if (!buf) return;
-  createContextIfNeeded();
-
-  const h = retainSharedLoop(idx, buf);
-  loopHandles[i] = h;
-  loopMeta[i] = { idx, dn };
-
-  // NEW: speed up as DN → 0 (use 0 as the “near” target even if your data tops at -1)
-  const dnMin = map.__DN_MIN__ ?? -11;
-  const rate  = dnToPlaybackRate(dn, dnMin, 0);
-  try {
-    // Smoothly glide to the new rate so it feels organic
-    h?.src?.playbackRate?.setTargetAtTime(rate, audioCtx.currentTime, 0.35);
-  } catch {}
-
-  console.info(`[AUDIO] Zone ${i} (DN ${dn}) → zone_sound${idx}.mp3, playbackRate=${rate.toFixed(2)}`);
-}
-
 
 function stopLoopsForIndex(i){
-  const meta = loopMeta[i];
-  if (!meta) { loopHandles[i]=null; return; }
-  releaseSharedLoop(meta.idx);
-  loopHandles[i]=null; loopMeta[i]=null;
+  const h = loopHandles[i];
+  if (h){ stopLoopHandle(h); }
+  loopHandles[i] = null;
 }
 
-function stopAllModes(){
-  stopAllCellClicks();
-  for (const [idx, rec] of activeLoopByIdx.entries()){ try{ stopHandle(rec.handle); }catch{} }
-  activeLoopByIdx.clear();
-  for (let i=0;i<loopHandles.length;i++){ loopHandles[i]=null; loopMeta[i]=null; }
-  stopAllSounds();
+function stopAllLoops(){
+  for (let i=0;i<loopHandles.length;i++) stopLoopsForIndex(i);
 }
 
-function setSoundMode(mode){
-  if (mode === SOUND_MODE) return;
-  SOUND_MODE = mode;
-  const btn = document.getElementById('toggleSoundModeBtn');
-  if (btn) btn.textContent = SOUND_MODE === SOUND_MODES.GEIGER ? 'GEIGER' : 'LOOPS';
-  stopAllModes();
-  if (zoneFlags?.length){ for (let i=0;i<zoneFlags.length;i++) zoneFlags[i]=false; }
-  updateSimulation();
-}
-function toggleSoundMode(){
-  setSoundMode(SOUND_MODE === SOUND_MODES.GEIGER ? SOUND_MODES.LOOPS : SOUND_MODES.GEIGER);
-}
-function ensureModeButton(){
-  let chip = document.querySelector('.chip');
-  if (!chip){
-    chip = document.createElement('div');
-    chip.className = 'chip';
-    chip.style.position='absolute'; chip.style.top='12px'; chip.style.left='12px'; chip.style.zIndex='999';
-    document.body.appendChild(chip);
+// Create a dedicated gapless loop for a zone and pulse its gain at desired rate
+async function startLoopsForIndex(i, dn){
+  const idx = dnToSoundIndex(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
+  const buf = await getSoundBuffer(idx);
+  if (!buf) return;
+
+  createContextIfNeeded();
+  stopLoopsForIndex(i); // replace if exists
+
+  // Build source
+  const src = audioCtx.createBufferSource();
+  const g   = audioCtx.createGain();
+
+  const { startSec, endSec, durSec } = getLoopPoints(buf);
+  src.buffer = buf;
+  src.loop = true;
+  // loop tight, avoiding mp3 padding
+  src.loopStart = Math.max(startSec, 0);
+  src.loopEnd   = Math.max(src.loopStart + 0.01, Math.min(endSec, durSec));
+
+  // start muted (floor)
+  const now = audioCtx.currentTime;
+  g.gain.setValueAtTime(PULSE_FLOOR, now);
+
+  src.connect(g).connect(masterGain || audioCtx.destination);
+  src.start(0);
+
+  // Compute rate & start pulser
+  const hz = dnToLoopHz(dn);
+  const periodMs = Math.max(90, 1000 / hz); // cap too-small intervals
+
+  // pulse function schedules a short gain envelope
+  function pulse(){
+    const t = audioCtx.currentTime + 0.002; // tiny lookahead
+    try{
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(PULSE_FLOOR, t);
+      g.gain.linearRampToValueAtTime(PULSE_GAIN, t + PULSE_ATTACK);
+      g.gain.setValueAtTime(PULSE_GAIN, t + PULSE_ATTACK + PULSE_PEAK);
+      g.gain.linearRampToValueAtTime(PULSE_FLOOR, t + PULSE_ATTACK + PULSE_PEAK + PULSE_DECAY);
+    }catch{}
   }
-  let btn = document.getElementById('toggleSoundModeBtn');
-  if (!btn){
-    btn = document.createElement('button');
-    btn.id = 'toggleSoundModeBtn';
-    btn.className = 'ghost';
-    btn.addEventListener('click', toggleSoundMode);
-    chip.appendChild(btn);
-  }
-  btn.textContent = SOUND_MODE === SOUND_MODES.GEIGER ? 'GEIGER' : 'LOOPS';
+
+  const timer = setInterval(pulse, periodMs);
+  // fire one immediately so user hears it
+  pulse();
+
+  loopHandles[i] = { src, gain: g, timer, hz, idx, dn };
+  console.info(`[AUDIO/LOOPS] Zone ${i} DN ${dn} → file zone_sound${idx}.mp3, ${hz.toFixed(2)} pulses/sec`);
 }
 
 /* ===========================================================
@@ -475,7 +382,6 @@ map.on('load', async () => {
 
   cellTimers.length = bedrockZones.length;
   loopHandles  = new Array(bedrockZones.length).fill(null);
-  loopMeta     = new Array(bedrockZones.length).fill(null);
   zoneFlags    = new Array(bedrockZones.length).fill(false);
 
   /* ---------- MAGMA GRADIENT SETUP (INVERTED) ---------- */
@@ -523,28 +429,29 @@ map.on('load', async () => {
       'circle-opacity': ['interpolate', ['linear'], ['get','pulse'], 0, 0.25, 1, 1]
     }
   });
-  // --- (Nice to have) Everyone's saved history (light trails) ---
-map.addSource('saved-all', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
-map.addLayer({
-  id:'saved-all',
-  type:'line',
-  source:'saved-all',
-  paint:{ 'line-color':'#444', 'line-width':2, 'line-opacity':0.6 }
-});
 
-// --- Latest position dot for each person (computed from saved history) ---
-map.addSource('saved-heads', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
-map.addLayer({
-  id:'saved-heads',
-  type:'circle',
-  source:'saved-heads',
-  paint:{
-    'circle-radius': 6,
-    'circle-color': '#111',
-    'circle-stroke-color': '#ffffff',
-    'circle-stroke-width': 2
-  }
-});
+  // --- (Nice to have) Everyone's saved history (light trails) ---
+  map.addSource('saved-all', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
+  map.addLayer({
+    id:'saved-all',
+    type:'line',
+    source:'saved-all',
+    paint:{ 'line-color':'#444', 'line-width':2, 'line-opacity':0.6 }
+  });
+
+  // --- Latest position dot for each person (computed from saved history) ---
+  map.addSource('saved-heads', { type:'geojson', data:{ type:'FeatureCollection', features:[] }});
+  map.addLayer({
+    id:'saved-heads',
+    type:'circle',
+    source:'saved-heads',
+    paint:{
+      'circle-radius': 6,
+      'circle-color': '#111',
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 2
+    }
+  });
 
   if (bedrock.features?.length) {
     map.fitBounds(turf.bbox(bedrock), {
@@ -594,7 +501,7 @@ map.addLayer({
 
   // Populate saved people list (click to show path)
   refreshPeople();
-    startMain();
+  startMain();
 });
 
 /* ===========================================================
@@ -660,6 +567,7 @@ async function updateMap() {
     liveHeadCoords = [];
   }
 }
+
 // -----------------------------------------------------------
 // Poll everyone's saved paths and update map layers
 // -----------------------------------------------------------
@@ -796,6 +704,20 @@ async function updateSimulation(){
 /* ===========================================================
    CONTROLS
 =========================================================== */
+function stopAllModes(){
+  stopAllCellClicks();
+  stopAllLoops();
+  // also clear any straggler one-shots
+  try{
+    for (const h of Array.from(playingSources)) {
+      try { h.src?.stop?.(0); } catch {}
+      try { h.src?.disconnect?.(); } catch {}
+      try { h.gain?.disconnect?.(); } catch {}
+      playingSources.delete(h);
+    }
+  }catch{}
+}
+
 let mainTimer = null;
 function startMain() {
   strongUnlock().then(() => {
@@ -850,7 +772,40 @@ document.getElementById('testMp3Btn_m')   ?.addEventListener('click', testMp3);
 document.getElementById('toggleSoundModeBtn')?.addEventListener('click', toggleSoundMode);
 document.getElementById('toggleSoundModeBtn_m')?.addEventListener('click', toggleSoundMode);
 
-/* Layer toggle helper (used by Acequia button) */
+function setSoundMode(mode){
+  if (mode === SOUND_MODE) return;
+  SOUND_MODE = mode;
+  const btn = document.getElementById('toggleSoundModeBtn');
+  if (btn) btn.textContent = SOUND_MODE === SOUND_MODES.GEIGER ? 'GEIGER' : 'LOOPS';
+  stopAllModes();
+  if (zoneFlags?.length){ for (let i=0;i<zoneFlags.length;i++) zoneFlags[i]=false; }
+  updateSimulation();
+}
+function toggleSoundMode(){
+  setSoundMode(SOUND_MODE === SOUND_MODES.GEIGER ? SOUND_MODES.LOOPS : SOUND_MODES.GEIGER);
+}
+function ensureModeButton(){
+  let chip = document.querySelector('.chip');
+  if (!chip){
+    chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.style.position='absolute'; chip.style.top='12px'; chip.style.left='12px'; chip.style.zIndex='999';
+    document.body.appendChild(chip);
+  }
+  let btn = document.getElementById('toggleSoundModeBtn');
+  if (!btn){
+    btn = document.createElement('button');
+    btn.id = 'toggleSoundModeBtn';
+    btn.className = 'ghost';
+    btn.addEventListener('click', toggleSoundMode);
+    chip.appendChild(btn);
+  }
+  btn.textContent = SOUND_MODE === SOUND_MODES.GEIGER ? 'GEIGER' : 'LOOPS';
+}
+
+/* ===========================================================
+   Layer toggle helper
+=========================================================== */
 function toggleLayer(id, btnId, label) {
   const vis = map.getLayoutProperty(id, 'visibility') || 'visible';
   const newVis = vis === 'visible' ? 'none' : 'visible';
@@ -990,8 +945,6 @@ function recalcMaxY() {
   maxY = Math.max(0, window.innerHeight - SHEET_PEEK - (safeInsetBottom() || 0));
 }
 function safeInsetBottom() {
-  // iOS returns a CSS env var; we can't read it directly in JS, so best-effort:
-  // this avoids overscrolling into the home bar area
   const el = document.createElement('div');
   el.style.cssText = 'position:fixed;left:-9999px;bottom:0;height:constant(safe-area-inset-bottom);height:env(safe-area-inset-bottom);';
   document.body.appendChild(el);
@@ -1010,9 +963,7 @@ function setSheetY(y, withTransition) {
   sheet.style.transition = withTransition ? 'transform 220ms cubic-bezier(.2,.8,.2,1)' : 'none';
   sheet.style.transform  = `translateY(${y}px)`;
   currentY = y;
-  // show a “reopen” hotspot when closed
   reopenHotspot.style.display = (y >= maxY - 1) ? 'block' : 'none';
-  // keep the legend in view if you use updateLegendPosition()
   if (typeof updateLegendPosition === 'function') updateLegendPosition();
 }
 function setOpen(open) {
@@ -1029,8 +980,7 @@ function beginDrag(clientY, pointerId) {
   startPointerY = clientY;
   startSheetY   = getSheetY();
   sheet.style.transition = 'none';
-  dragOverlay.style.display = 'block';      // eat map events while dragging
-  // ensure we keep receiving move events even if pointer leaves the handle
+  dragOverlay.style.display = 'block';
   handle.setPointerCapture?.(pointerId);
 }
 function moveDrag(clientY) {
@@ -1047,9 +997,8 @@ function endDrag(pointerId) {
   snap();
 }
 
-// Pointer events (use header as big drag target)
+// Pointer events
 function onPointerDown(e){
-  // only primary touch/mouse
   if (e.pointerType === 'mouse' && e.button !== 0) return;
   e.preventDefault();
   beginDrag(e.clientY ?? (e.touches && e.touches[0]?.clientY) ?? 0, e.pointerId);
@@ -1068,27 +1017,16 @@ function onPointerUp(e){
 // Init
 function initSheet(){
   recalcMaxY();
-  // start open
   setOpen(true);
-
-  // Header & handle both start the gesture
   header.addEventListener('pointerdown', onPointerDown, { passive:false });
   handle.addEventListener('pointerdown', onPointerDown, { passive:false });
-
-  // Global move/end so the drag continues outside header
   window.addEventListener('pointermove', onPointerMove, { passive:false });
   window.addEventListener('pointerup',   onPointerUp,   { passive:false });
   window.addEventListener('pointercancel', onPointerUp, { passive:false });
-
-  // Reopen when tapping the hotspot (visible only when closed)
   reopenHotspot.addEventListener('click', () => setOpen(true), { passive:true });
-
-  // Resize/orientation → keep state but recompute travel
   const onResize = () => { const wasOpen = isOpen; recalcMaxY(); setOpen(wasOpen); };
   window.addEventListener('resize', onResize);
   window.addEventListener('orientationchange', onResize);
-
-  // Escape to close, ArrowUp/Down to toggle (helps desktop testing)
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') setOpen(false);
     if (e.key === 'ArrowUp') setOpen(true);
@@ -1096,8 +1034,6 @@ function initSheet(){
   });
 }
 initSheet();
-
-
 
 /* ===========================================================
    GEO-TIFF OVERLAY (resilient loader + toggle)
