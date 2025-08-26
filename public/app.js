@@ -181,19 +181,47 @@ function stopAllSounds(){
   }catch{}
 }
 
+// --- Playback-rate mapping for LOOPS (closer to DN=0 → faster) ---
+const PB_MIN = 0.88;   // slowest (far from the Acequia)
+const PB_MAX = 1.35;   // fastest (closest to DN=0)
+const PB_GAMMA = 1.15; // curve shaping; >1 biases more time at slower rates
+
+function dnToPlaybackRate(dn, dnMin, dnMaxTarget = 0){
+  // Clamp DN into [dnMin, dnMaxTarget] (dnMaxTarget defaults to 0 so “closest to 0” wins)
+  const lo = Math.min(dnMin, dnMaxTarget);
+  const hi = Math.max(dnMin, dnMaxTarget);
+  const clamped = Math.min(hi, Math.max(lo, dn));
+
+  // Normalize so dnMin -> 0, 0 (or dnMaxTarget) -> 1
+  const t = (clamped - dnMin) / (dnMaxTarget - dnMin || 1);
+  const shaped = Math.pow(Math.min(1, Math.max(0, t)), PB_GAMMA);
+
+  return PB_MIN + shaped * (PB_MAX - PB_MIN);
+}
+
 /* ===========================================================
    DETERMINISTIC GEIGER CLICKS (rate ∝ DN)
 =========================================================== */
-const RATE_MIN_HZ = 1.0;
-const RATE_MAX_HZ = 18.0;
-const RATE_GAMMA  = 1.15;
+// Clicks per second based on distance-to-0 DN
+// DN=0 → fast (6 Hz), DN=11 → slow (1 Hz)
+const RATE_NEAR_HZ = 6.0; // at DN ≈ 0
+const RATE_FAR_HZ  = 1.0; // at DN ≈ 11
+const RATE_GAMMA   = 1.25; // curve shaping (↑ = stronger speed-up near 0)
 
-function dnToRateHz(dn, dnMin, dnMax){
-  const tRaw = (dn - dnMax) / (dnMin - dnMax); // 0 at max, 1 at min
-  const t = Math.min(1, Math.max(0, tRaw));
-  const shaped = Math.pow(t, RATE_GAMMA);
-  return RATE_MIN_HZ + shaped * (RATE_MAX_HZ - RATE_MIN_HZ);
+/**
+ * Map DN to clicks/sec. Works whether your DN is 0..11 or negative.
+ * If your data is negative (e.g. -11..0), we use |DN|.
+ */
+function dnToRateHz(dn){
+  // clamp 0..11 using absolute value so -11..0 works too
+  const dnAbs = Math.min(11, Math.max(0, Math.abs(dn)));
+  // t = 0 near 0, 1 far; then shape so it speeds up more near 0
+  const t = dnAbs / 11;            // 0 (near) → 1 (far)
+  const shaped = Math.pow(1 - t, RATE_GAMMA); // 1 (near) → 0 (far)
+  return RATE_FAR_HZ + shaped * (RATE_NEAR_HZ - RATE_FAR_HZ);
 }
+
+
 
 function geigerClick(vol = 0.14){
   if (!audioCtx) return;
@@ -224,13 +252,28 @@ function geigerClick(vol = 0.14){
 const cellTimers = [];
 function startCellClicks(i, dn){
   createContextIfNeeded();
-  const hz = dnToRateHz(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
-  const periodMs = Math.max(20, 1000 / Math.max(0.001, hz));
+
+  const hz = dnToRateHz(dn);
+  const periodMs = Math.max(50, 1000 / hz); // 6 Hz → ~167 ms, 1 Hz → 1000 ms
+
   stopCellClicks(i);
-  const id = setInterval(()=> geigerClick(0.14), periodMs);
+  const id = setInterval(() => geigerClick(0.14), periodMs);
+
   cellTimers[i] = { id, hz, dn };
-  console.info(`[AUDIO] Zone ${i} (DN ${dn}) → Geiger ${hz.toFixed(2)} Hz`);
+  console.info(`[AUDIO] Zone ${i} DN ${dn} → ${hz.toFixed(2)} Hz (${periodMs.toFixed(0)} ms)`);
 }
+
+
+function updateCellRate(i, dn){
+  // Only update if the rate changes significantly
+  const hz = dnToRateHz(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
+  const prev = cellTimers[i]?.hz || 0;
+  if (Math.abs(hz - prev) > 0.5) {
+    startCellClicks(i, dn);
+  }
+}
+
+
 function stopCellClicks(i){
   const t = cellTimers[i];
   if (t && t.id){ clearInterval(t.id); }
@@ -294,6 +337,28 @@ async function startLoopsForIndex(i, dn){
   loopMeta[i] = { idx, dn };
   console.info(`[AUDIO] Zone ${i} (DN ${dn}) → zone_sound${idx}.mp3 (gapless)`);
 }
+
+async function startLoopsForIndex(i, dn){
+  const idx = dnToSoundIndex(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
+  const buf = await getSoundBuffer(idx);
+  if (!buf) return;
+  createContextIfNeeded();
+
+  const h = retainSharedLoop(idx, buf);
+  loopHandles[i] = h;
+  loopMeta[i] = { idx, dn };
+
+  // NEW: speed up as DN → 0 (use 0 as the “near” target even if your data tops at -1)
+  const dnMin = map.__DN_MIN__ ?? -11;
+  const rate  = dnToPlaybackRate(dn, dnMin, 0);
+  try {
+    // Smoothly glide to the new rate so it feels organic
+    h?.src?.playbackRate?.setTargetAtTime(rate, audioCtx.currentTime, 0.35);
+  } catch {}
+
+  console.info(`[AUDIO] Zone ${i} (DN ${dn}) → zone_sound${idx}.mp3, playbackRate=${rate.toFixed(2)}`);
+}
+
 
 function stopLoopsForIndex(i){
   const meta = loopMeta[i];
