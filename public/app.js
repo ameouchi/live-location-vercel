@@ -85,12 +85,15 @@ async function strongUnlock() {
 }
 
 /* Resume on tab return (helps iOS) */
-document.addEventListener('visibilitychange', async ()=>{
-  if (document.visibilityState === 'visible' && audioCtx?.state !== 'running'){
-    try { await audioCtx.resume(); } catch {}
-    updateCtxBadge();
+document.addEventListener('visibilitychange', ()=>{
+  if (document.visibilityState === 'visible') {
+    audioCtx?.resume?.();
+    // resync scheduler nextTime markers
+    const now = audioCtx?.currentTime || 0;
+    for (const st of zonePulseState.values()) st.nextTime = now + 0.06;
   }
 });
+
 
 /* ===========================================================
    BUFFER LOADING & LOOPED SOURCES
