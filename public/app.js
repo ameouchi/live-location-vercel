@@ -84,6 +84,14 @@ async function strongUnlock() {
   setTimeout(()=>{ try{el.pause()}catch{} el.src=''; el.remove(); }, 1500);
 }
 
+/* Resume on tab return (helps iOS) */
+document.addEventListener('visibilitychange', async ()=>{
+  if (document.visibilityState === 'visible' && audioCtx?.state !== 'running'){
+    try { await audioCtx.resume(); } catch {}
+    updateCtxBadge();
+  }
+});
+
 /* ===========================================================
    BUFFER LOADING & LOOPED SOURCES
 =========================================================== */
@@ -132,7 +140,6 @@ function getLoopPoints(buf, thresh = 0.0008, padSamples = 64){
 /* ===========================================================
    GEIGER (unchanged, for GEIGER mode)
 =========================================================== */
-// Clicks per second based on distance-to-0 DN
 const RATE_NEAR_HZ = 6.0; // at DN ≈ 0
 const RATE_FAR_HZ  = 1.0; // at DN ≈ 11
 const RATE_GAMMA   = 1.25;
@@ -212,37 +219,79 @@ async function getSoundBuffer(idx){
 }
 
 /* ===========================================================
-   LOOPS MODE (pulsed 1..11x/sec depending on DN)
+   LOOPS MODE (audio-clock scheduler; 1..11x/sec by DN)
 =========================================================== */
 
-// === LOOPS: pulse rate by DN ===
 // DN = 0  → 11 pulses/sec
 // DN = 11 →  1 pulse/sec
 const LOOP_RATE_NEAR_HZ = 11.0;
 const LOOP_RATE_FAR_HZ  = 1.0;
-const LOOP_RATE_GAMMA   = 1.20; // shape; 1 = linear, >1 focuses speed-up near DN=0
+const LOOP_RATE_GAMMA   = 1.20;
 
 function dnToLoopHz(dn){
-  const dnAbs = Math.min(11, Math.max(0, Math.abs(dn))); // works with negative DN too
-  const t = dnAbs / 11;                 // 0 (near) → 1 (far)
+  const dnAbs = Math.min(11, Math.max(0, Math.abs(dn)));
+  const t = dnAbs / 11;                         // 0 (near) → 1 (far)
   const shaped = Math.pow(1 - t, LOOP_RATE_GAMMA); // 1 (near) → 0 (far)
   return LOOP_RATE_FAR_HZ + shaped * (LOOP_RATE_NEAR_HZ - LOOP_RATE_FAR_HZ);
 }
 
-// Pulse envelope (how each “play” feels)
-const PULSE_ATTACK = 0.015; // seconds
-const PULSE_PEAK   = 0.060; // hold at top
-const PULSE_DECAY  = 0.180; // fade out
-const PULSE_FLOOR  = 0.0005; // near-silence between pulses
-const PULSE_GAIN   = 1.0;   // max loudness per pulse
+// ---- GLOBAL AUDIO SCHEDULER (removes setInterval jitter) ----
+const SCHED_INTERVAL_MS = 25;     // JS wakes to queue events
+const SCHEDULE_AHEAD_S  = 0.25;   // place envelopes slightly in the future
 
-// Per-zone loop state (individual source & gain + timer)
-let loopHandles = []; // [{ src, gain, timer, hz, idx, dn, startedAt } ...] by zone index
+let schedulerTimer = null;
+const zonePulseState = new Map(); // i -> { nextTime, hz, gain }
+
+function startScheduler(){
+  if (schedulerTimer) return;
+  schedulerTimer = setInterval(scheduleTick, SCHED_INTERVAL_MS);
+}
+function stopScheduler(){
+  if (schedulerTimer){ clearInterval(schedulerTimer); schedulerTimer = null; }
+  zonePulseState.clear();
+}
+function scheduleTick(){
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const horizon = now + SCHEDULE_AHEAD_S;
+
+  for (const [i, st] of zonePulseState.entries()){
+    if (!st || !st.gain || !st.hz || st.hz <= 0) continue;
+    const period = 1 / st.hz;
+
+    if (!Number.isFinite(st.nextTime) || st.nextTime < now - 1) st.nextTime = now;
+
+    while (st.nextTime < horizon){
+      schedulePulseAt(st.gain, st.nextTime);
+      st.nextTime += period;
+    }
+  }
+}
+
+// Pulse envelope
+const PULSE_ATTACK = 0.015; // s
+const PULSE_PEAK   = 0.060; // s
+const PULSE_DECAY  = 0.180; // s
+const PULSE_FLOOR  = 0.0005;
+const PULSE_GAIN   = 1.0;
+
+function schedulePulseAt(gainNode, t0){
+  const g = gainNode.gain;
+  try {
+    g.cancelScheduledValues(t0);
+    g.setValueAtTime(PULSE_FLOOR, t0);
+    g.linearRampToValueAtTime(PULSE_GAIN,      t0 + PULSE_ATTACK);
+    g.setValueAtTime(PULSE_GAIN,               t0 + PULSE_ATTACK + PULSE_PEAK);
+    g.linearRampToValueAtTime(PULSE_FLOOR,     t0 + PULSE_ATTACK + PULSE_PEAK + PULSE_DECAY);
+  } catch {}
+}
+
+// per-zone loop state (source & gain; scheduler holds timing)
+let loopHandles = []; // [{ src, gain, hz, idx, dn }...] by zone
 
 function stopLoopHandle(h){
   if (!h) return;
   try{
-    if (h.timer) clearInterval(h.timer);
     const now = audioCtx.currentTime;
     h.gain.gain.cancelScheduledValues(now);
     h.gain.gain.setTargetAtTime(0, now, 0.08);
@@ -256,13 +305,15 @@ function stopLoopsForIndex(i){
   const h = loopHandles[i];
   if (h){ stopLoopHandle(h); }
   loopHandles[i] = null;
+  zonePulseState.delete(i);
+  if (zonePulseState.size === 0) stopScheduler();
 }
 
 function stopAllLoops(){
   for (let i=0;i<loopHandles.length;i++) stopLoopsForIndex(i);
 }
 
-// Create a dedicated gapless loop for a zone and pulse its gain at desired rate
+// Create a dedicated gapless loop for a zone and pulse its gain via scheduler
 async function startLoopsForIndex(i, dn){
   const idx = dnToSoundIndex(dn, map.__DN_MIN__ ?? -11, map.__DN_MAX__ ?? -1);
   const buf = await getSoundBuffer(idx);
@@ -271,46 +322,40 @@ async function startLoopsForIndex(i, dn){
   createContextIfNeeded();
   stopLoopsForIndex(i); // replace if exists
 
-  // Build source
   const src = audioCtx.createBufferSource();
   const g   = audioCtx.createGain();
 
   const { startSec, endSec, durSec } = getLoopPoints(buf);
   src.buffer = buf;
   src.loop = true;
-  // loop tight, avoiding mp3 padding
   src.loopStart = Math.max(startSec, 0);
   src.loopEnd   = Math.max(src.loopStart + 0.01, Math.min(endSec, durSec));
 
-  // start muted (floor)
   const now = audioCtx.currentTime;
   g.gain.setValueAtTime(PULSE_FLOOR, now);
 
   src.connect(g).connect(masterGain || audioCtx.destination);
   src.start(0);
 
-  // Compute rate & start pulser
   const hz = dnToLoopHz(dn);
-  const periodMs = Math.max(90, 1000 / hz); // cap too-small intervals
 
-  // pulse function schedules a short gain envelope
-  function pulse(){
-    const t = audioCtx.currentTime + 0.002; // tiny lookahead
-    try{
-      g.gain.cancelScheduledValues(t);
-      g.gain.setValueAtTime(PULSE_FLOOR, t);
-      g.gain.linearRampToValueAtTime(PULSE_GAIN, t + PULSE_ATTACK);
-      g.gain.setValueAtTime(PULSE_GAIN, t + PULSE_ATTACK + PULSE_PEAK);
-      g.gain.linearRampToValueAtTime(PULSE_FLOOR, t + PULSE_ATTACK + PULSE_PEAK + PULSE_DECAY);
-    }catch{}
-  }
+  loopHandles[i] = { src, gain: g, hz, idx, dn };
 
-  const timer = setInterval(pulse, periodMs);
-  // fire one immediately so user hears it
-  pulse();
+  // register with scheduler
+  zonePulseState.set(i, { gain: g, hz, nextTime: now + 0.05 });
+  startScheduler();
 
-  loopHandles[i] = { src, gain: g, timer, hz, idx, dn };
+  // immediate first pulse for responsiveness
+  schedulePulseAt(g, now + 0.02);
+
   console.info(`[AUDIO/LOOPS] Zone ${i} DN ${dn} → file zone_sound${idx}.mp3, ${hz.toFixed(2)} pulses/sec`);
+}
+
+// Optional helper if DN changes while zone stays active
+function updateLoopRate(i, dn){
+  const st = zonePulseState.get(i);
+  if (!st) return;
+  st.hz = dnToLoopHz(dn);
 }
 
 /* ===========================================================
@@ -927,14 +972,14 @@ function updateLegendPosition() {
 const sheet        = document.getElementById('sheet');
 const handle       = document.getElementById('sheetHandle');
 const header       = document.getElementById('sheetHeader');
-const dragOverlay  = document.getElementById('sheetDragOverlay'); // transparent blocker (HTML below)
-const reopenHotspot= document.getElementById('sheetHotspot');     // bottom reopen tap area
+const dragOverlay  = document.getElementById('sheetDragOverlay');
+const reopenHotspot= document.getElementById('sheetHotspot');
 
 // Config
-const SHEET_PEEK = 52;             // visible height when closed
-const SNAP_RATIO = 0.6;            // >60% of travel → snap closed
-let maxY = 0;                       // px the sheet can travel downward
-let isOpen = true;                  // current logical state
+const SHEET_PEEK = 52;
+const SNAP_RATIO = 0.6;
+let maxY = 0;
+let isOpen = true;
 let isDragging = false;
 let startPointerY = 0;
 let startSheetY = 0;
