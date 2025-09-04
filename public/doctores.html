@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Map – Simulation & Layers (Mobile Friendly)</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+
+  <!-- Mapbox GL JS & CSS -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.js"></script>
+
+  <!-- turf.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+  <!-- App CSS -->
+  <link rel="stylesheet" href="styles.css" />
+  
+  <link href="https://fonts.googleapis.com/css2?family=DIN+Condensed:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+
+
+  <!-- App JS -->
+  <script defer src="app_doctores.js"></script>
+</head>
+<body>
+
+  <!-- Map -->
+  <div id="map"></div>
+
+  <!-- Floating chips (always visible) -->
+  <div class="chip">
+    <button id="bedrockToggle">ACEQUIA: ENCENDIDA</button>
+     <button id="toggleSoundModeBtn" class="ghost" type="button">Mode: Geiger</button>
+     <button id="geotiffToggle" class="ghost">VER GEOLOGIA</button>
+
+        <button id="drawBtn"  class="fab">DIBUJAR LINEA</button>
+    <button id="clearBtn" class="fab">LIMPIAR</button>
+  </div>
+
+
+  <!-- Desktop sidebar -->
+  <aside id="sidebar">
+
+
+    <div class="group">
+      <div class="row" style="margin-bottom:10px;">
+        <input id="name" type="text" placeholder="Enter your name" />
+      </div>
+      <div class="row">
+        <button id="shareLocationBtn" class="primary">Start Sharing</button>
+        <button id="stopSharingBtn" class="danger" style="display:none;">Stop</button>
+      </div>
+      <div class="hint">Mobile requires HTTPS or localhost for GPS.</div>
+    </div>
+
+    <div class="group">
+      <div class="row">
+        <button id="startBtn" class="primary">▶ Start</button>
+        <button id="stopBtn"  class="ghost">■ Stop Sounds</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <strong>People</strong>
+      <ul id="peopleList"></ul>
+    </div>
+  </aside>
+<div id="legend">
+  <div class="legend-item">
+    <span></span> Cercano a la Acequia
+  </div>
+  <div class="legend-item">
+    <span class="legend-color"></span> Lejano a la Acequia
+  </div>
+</div>
+
+  <!-- Mobile bottom sheet -->
+  <section id="sheet" aria-label="Controls">
+    <div id="sheetHeader">
+      <div class="drag" id="sheetHandle"></div>
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:0 4px 6px;">
+        <h1 style="font-weight:1000;">IFRAESTRUCTURAS INVISIBLES</h1>
+
+      </div>
+    </div>
+    <div id="sheetBody">
+      <div class="group">
+        <div class="controlRow">
+          <button id="startBtn_m" class="primary">COMENZAR</button>
+          <button id="stopBtn_m"  class="ghost">DETENER</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="row" style="margin-bottom:10px;">
+          <input id="name_m" type="text" placeholder="Escribe tu nombre" />
+        </div>
+        <div class="row">
+          <button id="shareLocationBtn_m" class="alt">COMPARTIR UBICACION</button>
+          <button id="stopSharingBtn_m" class="danger" style="display:none;">DEJAR DE COMPARTIR UBICACION</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>PARTICIPANTES</h3>
+        <ul id="peopleList_m"></ul>
+      </div>
+    </div>
+  </section>
+<!-- Blocks pointer events to the map while dragging -->
+<!-- Blocks pointer events to the map while dragging -->
+<div id="sheetDragOverlay" aria-hidden="true"></div>
+<!-- Tap area to reopen when the sheet is closed -->
+<div id="sheetHotspot" aria-hidden="true" title="Open panel"></div>
+
+
+
+</body>
+</html>
