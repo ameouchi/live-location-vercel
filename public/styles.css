@@ -51,7 +51,7 @@ body{
   display:flex; flex-direction:column; gap:12px;
 }
 
-/* Headings (use SemiBold weight) */
+/* Headings */
 h1{ margin:1px 0 3px; font-size:1rem; font-weight:600; color:#0e01f5; }
 h3{ margin:2px 0 6px; font-size:12px; font-weight:600; color:#0e01f5; }
 
@@ -65,7 +65,7 @@ input[type="text"]{
   font-weight:400;
 }
 
-/* Buttons (force Rational + remove native appearance) */
+/* Buttons */
 button, input, select, textarea {
   appearance: none;
   -webkit-appearance: none;
@@ -127,12 +127,11 @@ button:active{ transform: translateY(15px); }
 }
 #sheetBody{ overflow:auto; display:flex; flex-direction:column; gap:12px; }
 
-/* --- Sheet drag: make sure we own the gesture and sit on top --- */
 #sheet,
 #sheetHeader,
 #sheetHandle,
 .drag {
-  touch-action: none;             /* prevent browser scroll */
+  touch-action: none;
   user-select: none;
   -webkit-user-select: none;
   cursor: grab;
@@ -140,29 +139,26 @@ button:active{ transform: translateY(15px); }
 
 #sheetHeader { position: sticky; top: 0; z-index: 1002; }
 
-/* Transparent blocker shown only while dragging to stop the map catching moves */
 #sheetDragOverlay {
   position: fixed;
   inset: 0;
-  z-index: 1001;                  /* just under the header so handle still works */
+  z-index: 1001;
   background: transparent;
-  display: none;                  /* toggled by JS */
-  pointer-events: auto;           /* eats pointer events while visible */
+  display: none;
+  pointer-events: auto;
 }
 
-/* Reopen hotspot shown when the sheet is closed */
 #sheetHotspot {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
-  height: 72px;                 /* big enough to sit above iOS bar */
+  height: 72px;
   z-index: 1001;
-  display: none;                /* JS toggles this */
-  background: transparent;      /* invisible tap area */
+  display: none;
+  background: transparent;
   pointer-events: auto;
 }
-
 
 .controlRow{
   display:grid; grid-template-columns: 1fr 1fr; gap:0px;
@@ -191,4 +187,52 @@ button:active{ transform: translateY(15px); }
   .chip{ top: 10px; left: 10px; right:auto;width:95%; }
   .fab-stack{ right:10px; }
   #sheet{ display:block; }
+}
+
+/* ============================= */
+/* Créditos SACPC (Cultura) */
+/* ============================= */
+
+.credits-ribbon{
+  position: fixed;
+  left: 50%;
+  bottom: max(8px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 60;
+  display: inline-block;
+  background: rgba(255,255,255,0.92);
+  backdrop-filter: blur(4px);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+  padding: 8px 12px;
+  text-decoration: none;
+}
+
+.credits-ribbon img{
+  display: block;
+  height: 38px;
+  width: auto;
+  filter: grayscale(100%);
+  opacity: 0.95;
+}
+
+/* Compact version for mobile */
+@media (max-width: 820px){
+  .credits-ribbon{
+    left: auto;
+    transform: none;
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    padding: 6px 8px;
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.16);
+  }
+  .credits-ribbon img{
+    height: 26px;
+  }
+}
+
+/* If bottom sheet overlaps */
+#sheet.is-open ~ .credits-ribbon{
+  bottom: calc(8px + 72px);
 }
