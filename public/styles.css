@@ -168,7 +168,7 @@ button:active{ transform: translateY(15px); }
   #sheet{ display:block; }
 }
 /* ============================= */
-/* Créditos SACPC – barra superior (azul suave) */
+/* Créditos SACPC – barra superior azul sólida */
 /* ============================= */
 :root{ --credit-h: 56px; }
 
@@ -176,32 +176,25 @@ button:active{ transform: translateY(15px); }
   position: fixed;
   top: 0; left: 0; right: 0;
   height: var(--credit-h);
-  background: rgba(14, 1, 245, 0.10); /* azul translúcido */
-  backdrop-filter: blur(8px) saturate(120%);
-  border-bottom: 1px solid rgba(14, 1, 245, 0.2);
+  background: #0e01f5; /* azul Tec */
+  border-bottom: 2px solid #ffffff;
   z-index: 1100;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 8px;
-  transition: background 0.3s ease, box-shadow 0.3s ease;
-}
-
-/* Suave sombra para dar sensación de capa */
-#creditBar:hover {
-  background: rgba(14, 1, 245, 0.18);
-  box-shadow: 0 2px 10px rgba(14, 1, 245, 0.25);
+  padding: 4px 10px;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.25);
 }
 
 #creditBar img{
   display: block;
   height: calc(var(--credit-h) - 14px);
   width: auto;
+  filter: brightness(0) invert(1); /* blanco */
   opacity: 0.95;
-  filter: brightness(0) invert(1); /* logo en blanco sobre fondo azul */
 }
 
-/* Ajuste de layout */
+/* Empuja todo hacia abajo */
 #map{ inset: var(--credit-h) 0 0 260px !important; }
 #sidebar{ inset: var(--credit-h) auto 0 0 !important; }
 .chip{ top: calc(var(--credit-h) + 8px) !important; }
@@ -210,11 +203,12 @@ button:active{ transform: translateY(15px); }
 @media (max-width: 820px){
   :root{ --credit-h: 44px; }
   #creditBar{
-    background: rgba(14, 1, 245, 0.15);
-    padding: 4px 8px;
+    background: #0e01f5;
+    padding: 4px 6px;
+  }
+  #creditBar img{
+    height: calc(var(--credit-h) - 10px);
   }
   #map{ inset: var(--credit-h) 0 0 0 !important; }
-  #sidebar{ display:none !important; }
   .chip{ top: calc(var(--credit-h) + 8px) !important; }
-  #creditBar img{ height: calc(var(--credit-h) - 10px); }
 }
