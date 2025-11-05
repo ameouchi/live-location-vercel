@@ -236,3 +236,52 @@ button:active{ transform: translateY(15px); }
 #sheet.is-open ~ .credits-ribbon{
   bottom: calc(8px + 72px);
 }
+
+/* ===== Barra superior de créditos (full-width) ===== */
+:root{
+  --credit-h: 56px; /* alto de la barra en desktop */
+}
+
+#creditBar{
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: var(--credit-h);
+  background: rgba(255,255,255,0.96);
+  backdrop-filter: blur(4px);
+  border-bottom: 1px solid #e6e9ef;
+  z-index: 1100; /* por encima de chips y mapa */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+}
+
+#creditBar img{
+  display: block;
+  height: calc(var(--credit-h) - 14px);
+  width: auto;
+  filter: grayscale(100%);
+  opacity: .98;
+}
+
+/* Desplazar UI para no quedar debajo de la barra */
+#map{
+  inset: var(--credit-h) 0 0 260px !important; /* deja espacio arriba y el sidebar a la derecha */
+}
+
+#sidebar{
+  inset: var(--credit-h) auto 0 0 !important;  /* que inicie debajo de la barra */
+}
+
+.chip{
+  top: calc(var(--credit-h) + 8px) !important; /* chips por debajo de la barra */
+}
+
+/* --- Móvil --- */
+@media (max-width: 820px){
+  :root{ --credit-h: 44px; }                  /* barra más compacta en móvil */
+
+  #map{ inset: var(--credit-h) 0 0 0 !important; }
+  #sidebar{ display: none !important; }
+  .chip{ top: calc(var(--credit-h) + 8px) !important; }
+}
