@@ -190,7 +190,6 @@ button:active{ transform: translateY(15px); }
   display: block;
   height: calc(var(--credit-h) - 14px);
   width: auto;
-  filter: brightness(0) invert(1); /* blanco */
   opacity: 0.95;
 }
 
